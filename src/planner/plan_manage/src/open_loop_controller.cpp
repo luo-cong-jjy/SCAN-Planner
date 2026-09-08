@@ -10,7 +10,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <scan_planner_msgs/msg/bspline.hpp>
 #include <tf2/LinearMath/Quaternion.h>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+// #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
 #include "bspline_opt/uniform_bspline.h"
 
@@ -43,7 +44,7 @@ public:
   }
 
 private:
-  bool parseBspline(const scan_planner_msgs::msg::Bspline::ConstSharedPtr &msg,
+  bool parseBspline(scan_planner_msgs::msg::Bspline::ConstSharedPtr msg,
                     UniformBspline &pos_traj)
   {
     if (msg->pos_pts.empty() || msg->knots.empty() || msg->order <= 0)

@@ -8,6 +8,10 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 
 find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
+
+list(APPEND CMAKE_MODULE_PATH "/usr/lib/x86_64-linux-gnu/cmake/pcl/Modules")
+find_package(FLANN REQUIRED)
+
 find_package(plan_env REQUIRED)
 find_package(rclcpp REQUIRED)
 

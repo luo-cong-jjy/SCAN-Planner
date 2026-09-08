@@ -10,11 +10,50 @@
   <img src="assets/images/abstract_real.jpg" width="100%"/>
 </p>
 
-SCAN-Planner 是一款面向四足机器人导航的空间碰撞感知局部规划器。本分支是原生 ROS 2 自移植版本，适配 Ubuntu 22.04、ROS 2 Humble、C++17 和 `colcon` 构建系统。
+SCAN-Planner 是一款面向四足机器人导航的空间碰撞感知局部规划器。本分支是原生 ROS 2 自移植版本，原始目标环境为 Ubuntu 22.04、ROS 2 Humble、C++17 和 `colcon` 构建系统。当前 fork 额外维护 ROS 2 Foxy 的核心规划器兼容性；Foxy 的 Gazebo Go2 仿真不在兼容承诺内。
 
 本仓库是 [wuyi2121/SCAN-Planner](https://github.com/wuyi2121/SCAN-Planner) 的衍生 ROS 2 移植版。核心算法、项目设计与原始研究工作归功于 Han Zheng、Zhe Chen、Yiwen Fu、Ming Yang 和 Tong Qin；ROS 2 适配由本仓库维护者完成，不代表原作者的官方发布或认可。
 
 ## 构建
+
+### ROS 2 Foxy 部署说明
+
+在 Ubuntu 20.04 + ROS 2 Foxy 上，先安装核心构建依赖：
+
+```bash
+sudo apt update
+sudo apt install -y \
+  build-essential cmake git python3-colcon-common-extensions python3-rosdep \
+  libeigen3-dev libflann-dev libpcl-dev libopencv-dev \
+  libarmadillo-dev libboost-all-dev
+source /opt/ros/foxy/setup.bash
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+```
+
+本地感知节点还需要：
+
+```bash
+sudo apt install -y libglm-dev
+```
+
+启用 OpenGL 后端时再安装：
+
+```bash
+sudo apt install -y libglew-dev libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev
+```
+
+Foxy 核心包验收命令（使用独立构建目录，避免旧缓存干扰）：
+
+```bash
+colcon build --base-paths src --symlink-install \
+  --packages-select scan_planner_msgs plan_env path_searching bspline_opt traj_utils scan_planner \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+```
+
+验收要求：上述 6 个包全部显示 `Finished`，且 `colcon test` 无失败；任何编译警告必须确认不是错误或 ABI 问题。
+
+Foxy 不提供本项目 Humble 版本使用的 `ros_gz_sim`、`gz_ros2_control`、`ros_gz_bridge` 和 `ros_gz_interfaces` 组合，因此不要在 Foxy 上执行 Go2 Fortress 仿真启动命令。需要仿真时使用 Ubuntu 22.04 + ROS 2 Humble，并按下节安装 Gazebo Fortress 依赖。
 
 安装 ROS 2 Humble 及包依赖后，在工作空间根目录下执行构建：
 

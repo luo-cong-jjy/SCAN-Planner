@@ -13,7 +13,10 @@ find_package(geometry_msgs REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common io filters)
+list(APPEND CMAKE_MODULE_PATH "/usr/lib/x86_64-linux-gnu/cmake/pcl/Modules")
+find_package(FLANN REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common io)
+
 find_package(pcl_conversions REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -32,7 +35,13 @@ ament_target_dependencies(plan_env
   cv_bridge geometry_msgs message_filters nav_msgs pcl_conversions rclcpp
   sensor_msgs tf2 tf2_ros visualization_msgs
 )
-target_link_libraries(plan_env Eigen3::Eigen ${PCL_LIBRARIES} ${OpenCV_LIBS})
+target_link_libraries(plan_env
+  Eigen3::Eigen
+  pcl_common
+  pcl_io
+  ${OpenCV_LIBS}
+)
+
 
 install(TARGETS plan_env EXPORT export_plan_env
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
