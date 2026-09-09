@@ -78,6 +78,7 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release -DUSE_GPU
 
 启动自定义确定性仿真器与规划器：
 
+##未指定pcd点云地图
 ```bash
 source install/setup.bash
 ros2 launch scan_planner run.launch.py \
@@ -85,13 +86,13 @@ ros2 launch scan_planner run.launch.py \
   controller_mode:=closed_loop use_gpu:=false
 ```
 
-
+##指定pcd点云地图
 ```bash
 source install/setup.bash
 ros2 launch scan_planner run.launch.py \
   is_real_world:=false navi_mode:=1 sensor_type:=lidar \
   controller_mode:=closed_loop use_gpu:=false \
-  use_pcd_map:=true pcd_map_file:=/home/xiaoqi_wen/Desktop/scan/SCAN-Planner/map.pcd
+  use_pcd_map:=true pcd_map_file:=/home/virdyn-lc/robodog_nav_system/src/SCAN-Planner/map.pcd
 ```
 
 
