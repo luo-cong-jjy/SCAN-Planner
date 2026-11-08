@@ -1,3 +1,7 @@
+/// @file
+/// 可选 OpenGL 感知后端，编译需要 USE_GPU=ON，运行还需 simulator.xml 选择 use_gpu。
+/// 节点名沿用 pcl_render_node，便于保持下游默认话题接口；CPU 和 GPU 后端是互斥替代分支。
+/// 激光分支使用 OpenGL 渲染组件；深度分支仍有基于点云的针孔合成流程，应分别追踪实际调用。
 #include "opengl_sim.hpp"
 #include <cv_bridge/cv_bridge.h>
 #include <algorithm>
@@ -46,11 +50,16 @@ ros::Timer local_sensing_timer, pose_timer, dynobj_timer;
 
 ros::Time t_init;
 
+// 初始 false；收到机身状态后 true，与 has_global_map 一起作为开始渲染的就绪条件，不含数据超时判定。
 bool has_odom(false);
+// 初始 false；全局场景准备成功后 true，不能解释为规划器已经融合了全部环境。
 bool has_global_map(false);
+// 私有 use_global_map_topic 缺省 false；simulator.xml 在随机地图分支将它设 true，从话题加载场景。
 bool use_global_map_topic(false);
 
+// 最近机身状态，由机身位姿回调更新；感知定时器据此设置观测位置和朝向。
 nav_msgs::Odometry odom_;
+// sensor2body：相机安装变换；sensor2world：机身变换组合后的相机世界位姿，随观测更新供深度投影。
 Eigen::Matrix4f sensor2body, sensor2world;
 
 std::string quadTopic(const std::string &name) {
@@ -61,8 +70,11 @@ std::string quadTopic(const std::string &name) {
   return prefix + "/" + name;
 }
 
+// 私有 output_pcd 缺省 0，调试文件输出开关。
 int output_pcd;
+// 私有 collisioncheck_enable 缺省 0；仅控制仿真器独立碰撞报告，不影响规划器安全定时器。
 int collisioncheck_enable;
+// 私有 is_360lidar 缺省 1；全周模式影响雷达角度图尺寸及视场筛选。
 int is_360lidar;
 int use_avia_pattern, use_vlp32_pattern, use_minicf_pattern, use_os128_pattern, use_os64_pattern,
 use_gaussian_filter;
@@ -74,11 +86,17 @@ double gl_xl, gl_yl, gl_zl;
 double resolution, inv_resolution;
 int GLX_SIZE, GLY_SIZE, GLZ_SIZE;
 
+// 合成深度图宽度，私有 cam_width 缺省 640 px。
 int cam_width = 640;
+// 合成深度图高度，私有 cam_height 缺省 480 px。
 int cam_height = 480;
+// 针孔水平焦距，私有缺省约 387.229 px，用于世界场景点投影。
 double cam_fx = 387.229248046875;
+// 针孔垂直焦距，私有缺省约 387.229 px。
 double cam_fy = 387.229248046875;
+// 针孔主点水平位置，私有缺省约 321.046 px。
 double cam_cx = 321.04638671875;
+// 针孔主点垂直位置，私有缺省约 243.450 px；图像缩放后需与其他内参一起对应。
 double cam_cy = 243.44969177246094;
 
 int plane_interline = 1;
@@ -99,7 +117,9 @@ int use_uav_extra_model = 1;
 pcl::PointCloud<PointType> uav_extra_model;
 
 // dynamic objects variables
+// 私有 dynobj_enable 缺省 0；启用后维护模拟障碍运动，并不代表规划器预测未来障碍轨迹。
 int dynobj_enable;
+// 动态障碍的尺寸尺度（m），由私有配置读取，具体几何随物体类型决定。
 double dynobject_size;
 vector<Eigen::Vector3d> dynobj_poss;
 vector<int> dynobj_move_modes;
@@ -108,12 +128,15 @@ vector<Eigen::Vector3d> dynobj_dir;
 vector<PointType> dynobj_points;
 pcl::PointCloud<PointType> dynobj_points_vis;
 vector<int> dynobj_pointsindex;
+// 动态障碍速度尺度（m/s），由私有配置读取。
 double dyn_velocity;
+// 动态障碍数量，私有缺省 0。
 int dynobject_num;
 int dyn_mode;
 Eigen::Vector3f map_min, map_max;
 int dyn_obs_diff_size_on = 1;
 vector<double> dyn_obs_size_vec;
+// 各模拟障碍的运动参考起始时刻，用于动态场景生成。
 vector<ros::Time> dyn_start_time_vec;
 PointType global_mapmin;
 PointType global_mapmax;
@@ -138,10 +161,12 @@ PointType uav_modelmax;
 int uavhash_xsize, uavhash_ysize, uavhash_zsize;
 pcl::PointCloud<PointType> collision_points;
 
+/// @brief 选择深度图输出分支。
 bool useDepthSensor() {
   return sensor_type_ == "depth";
 }
 
+/// @brief 选择雷达点云输出分支。
 bool useLidarSensor() {
   return sensor_type_ == "lidar";
 }
@@ -166,6 +191,7 @@ nav_msgs::Odometry makeSensorPoseMsg(const nav_msgs::Odometry &body_odom,
   return sensor_odom;
 }
 
+/// @brief 准备针孔投影所需场景点云与近邻索引，返回地图是否可用。
 bool preparePinholeMap(const pcl::PointCloud<PointType> &raw_cloud) {
   pcl::PointCloud<PointType> finite_cloud;
   finite_cloud.points.reserve(raw_cloud.points.size());
@@ -205,6 +231,7 @@ bool preparePinholeMap(const pcl::PointCloud<PointType> &raw_cloud) {
   return true;
 }
 
+/// @brief 从 PCD 准备针孔/碰撞分支所需地图，失败时由 main() 中止相关启动流程。
 bool loadPinholeMapFromFile(const std::string &map_file) {
   pcl::PointCloud<PointType> raw_cloud;
   if (pcl::io::loadPCDFile<PointType>(map_file, raw_cloud) == -1) {
@@ -215,10 +242,12 @@ bool loadPinholeMapFromFile(const std::string &map_file) {
   return preparePinholeMap(raw_cloud);
 }
 
+/// @brief 将当前相机变换封装为 Odometry，与深度图的时戳和坐标解释对应。
 void publishCameraPose(const nav_msgs::Odometry &body_odom) {
   camera_pose_pub_.publish(makeSensorPoseMsg(body_odom, sensor2world, "camera"));
 }
 
+/// @brief 按渲染使用的位置与姿态发布雷达位姿，避免观测与位姿方向配置分离。
 void publishLidarPose(const nav_msgs::Odometry &body_odom, const ros::Time &stamp,
                       const Eigen::Vector3f &pos, const Eigen::Quaternionf &quat) {
   nav_msgs::Odometry lidar_pose;
@@ -236,6 +265,7 @@ void publishLidarPose(const nav_msgs::Odometry &body_odom, const ros::Time &stam
   lidar_pose_pub_.publish(lidar_pose);
 }
 
+/// @brief 在相机坐标系按内参投影附近场景点，对像素保留近端深度，发布米制 32FC1 图像。
 void publishPinholeDepth(const ros::Time &stamp) {
   if (cloud_all_map.empty()) {
     ROS_WARN_THROTTLE(1.0, "[opengl_render_node] No pinhole map cloud yet; skip depth publish.");
@@ -419,6 +449,7 @@ pcl::PointCloud<PointType> generate_box_cloud(double size) {
   return box_cloud;
 }
 
+/// @brief 生成可选障碍几何点云，供动态场景输入渲染。
 void generate_ptclouds_by_pos(Eigen::Vector3d obs_pos, int obs_type,
                               pcl::PointCloud<PointType> &obs_cloud,
                               vector<PointType> &obs_points) {
@@ -455,6 +486,7 @@ void generate_ptclouds_by_pos(Eigen::Vector3d obs_pos, int obs_type,
   }
 }
 
+/// @brief 推进可选动态障碍仿真并组织渲染点云，与规划器是否具有动态预测能力分别判断。
 void dynobjGenerate(const ros::TimerEvent &event) {
   if (dynobj_enable == 1) {
     dynobj_points.clear();
@@ -550,6 +582,7 @@ void dynobjGenerate(const ros::TimerEvent &event) {
   }
 }
 
+/// @brief 缓存机身状态并更新相机变换及可选碰撞信息；激光位姿在渲染分支配套发布。
 void rcvOdometryCallback(const nav_msgs::Odometry &odom) {
   /*if(!has_global_map)
     return;*/
@@ -657,6 +690,7 @@ void rcvOdometryCallback(const nav_msgs::Odometry &odom) {
 }
 
 // decentralize simulation, get other uav odometry and generate point clouds
+/// @brief 缓存其他机器人状态，供多机几何或显示点云分支使用。
 void multiOdometryCallback(const nav_msgs::OdometryConstPtr &msg, int drone_id) {
   Eigen::Vector3d uav_pos;
   uav_pos(0) = msg->pose.pose.position.x;
@@ -731,6 +765,7 @@ void multiOdometryCallback(const nav_msgs::OdometryConstPtr &msg, int drone_id) 
 
 int comp_time_count = 0;
 
+/// @brief 从话题接入场景地图并准备渲染/针孔所需数据，适用于 use_global_map_topic 分支。
 void rcvGlobalPointCloudCallBack(const sensor_msgs::PointCloud2 &pointcloud_map) {
   if (has_global_map)
     return;
@@ -753,6 +788,7 @@ void rcvGlobalPointCloudCallBack(const sensor_msgs::PointCloud2 &pointcloud_map)
   has_global_map = true;
 }
 
+/// @brief 按 sensor_type 调用针孔投影或 OpenGL 雷达渲染，并发布观测及匹配的传感器位姿。
 void renderSensedPoints(const ros::TimerEvent &event) {
   ros::Time t1 = ros::Time::now();
 
@@ -903,65 +939,199 @@ void renderSensedPoints(const ros::TimerEvent &event) {
   publishLidarPose(odom_, time_stamp_, pos, quat);
 }
 
+/// @brief 配置渲染器、地图来源、消息和定时器；话题地图与 PCD 参数输入由 use_global_map_topic 区分。
+/// 启用 GPU 可执行文件不代表已经切换本节点；主 launch 当前未透传 use_gpu。
 int main(int argc, char **argv) {
   ros::init(argc, argv, "pcl_render");
   ros::NodeHandle nh("~");
 
+  // 本段读取启动配置：下方“正常默认”来自当前 launch/XML，实际运行以参数服务器为准。
+  // param() 的末项仅是缺参回退；getParam()/必需参数封装没有这一回退，具体见各行说明。
+  // 参数读取：观测话题中的机器人名称前缀，默认 quad_0；属于仿真接口命名，不限定机器人实际形态。
+  // 配置位置：私有 /pcl_render_node/quadrotor_name；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：std::string("quad_0")；只有参数服务器中没有该键时才使用。
   nh.param("quadrotor_name", quad_name, std::string("quad_0"));
+  // 参数读取：写入 /pcl_render_node/sensor_type，匹配同名感知节点的私有句柄。
+  // 配置来源：simulator.xml → /pcl_render_node/sensor_type；正常默认启动取 lidar。
+  // 缺参回退：std::string("depth")；只有参数服务器中没有该键时才使用。
   nh.param("sensor_type", sensor_type_, std::string("depth"));
   if (!useDepthSensor() && !useLidarSensor()) {
     ROS_ERROR("Unsupported sensor_type '%s'. Expected 'depth' or 'lidar'.", sensor_type_.c_str());
     return 1;
   }
   ROS_INFO("opengl_render_node sensor_type: %s", sensor_type_.c_str());
+  // 参数读取：整数开关：是否采用全周雷达视场；影响角度栅格宽度和观测筛选。
+  // 配置位置：私有 /pcl_render_node/is_360lidar；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：1；只有参数服务器中没有该键时才使用。
   nh.param("is_360lidar", is_360lidar, 1);
+  // 参数读取：模拟观测的最大空间距离，单位 m；不同于 GridMap 的融合射线长度。
+  // 配置位置：私有 /pcl_render_node/sensing_horizon；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：40.0；只有参数服务器中没有该键时才使用。
   nh.param("sensing_horizon", sensing_horizon, 40.0);
+  // 参数读取：感知渲染和动态物体回调的目标频率，单位 Hz；计算耗时可能使实际频率下降。
+  // 配置位置：私有 /pcl_render_node/sensing_rate；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：10.0；只有参数服务器中没有该键时才使用。
   nh.param("sensing_rate", sensing_rate, 10.0);
+  // 参数读取：保留的估计频率配置，单位 Hz；当前节点没有据此单独创建定位估计器。
+  // 配置位置：私有 /pcl_render_node/estimation_rate；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：10.0；只有参数服务器中没有该键时才使用。
   nh.param("estimation_rate", estimation_rate, 10.0);
+  // 参数读取：雷达极坐标角度分辨率，单位度；越小通常意味着更大的角度栅格和计算量。
+  // 配置位置：私有 /pcl_render_node/polar_resolution；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.2；只有参数服务器中没有该键时才使用。
   nh.param("polar_resolution", polar_resolution, 0.2);
+  // 参数读取：雷达水平视场角，单位度；与全周模式共同决定筛选范围。
+  // 配置位置：私有 /pcl_render_node/yaw_fov；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：360.0；只有参数服务器中没有该键时才使用。
   nh.param("yaw_fov", yaw_fov, 360.0);
+  // 参数读取：雷达垂直视场角，单位度。
+  // 配置位置：私有 /pcl_render_node/vertical_fov；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：90.0；只有参数服务器中没有该键时才使用。
   nh.param("vertical_fov", vertical_fov, 90.0);
+  // 参数读取：模拟雷达的近端距离配置，单位 m；具体筛除位置见渲染分支。
+  // 配置位置：私有 /pcl_render_node/min_raylength；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：1.0；只有参数服务器中没有该键时才使用。
   nh.param("min_raylength", min_raylength, 1.0);
+  // 参数读取：场景降采样及部分几何离散使用的长度尺度，单位 m；不是规划器体素分辨率。
+  // 配置位置：私有 /pcl_render_node/downsample_res；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.1；只有参数服务器中没有该键时才使用。
   nh.param("downsample_res", downsample_res, 0.1);
+  // 参数读取：Livox 扫描模式相关配置，仅在相应扫描模式启用时按渲染实现使用。
+  // 配置位置：私有 /pcl_render_node/livox_linestep；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：1.4；只有参数服务器中没有该键时才使用。
   nh.param("livox_linestep", livox_linestep, 1.4);
+  // 参数读取：Avia 风格扫描模式开关，与其他扫描模式的实际优先级见渲染分支。
+  // 配置位置：私有 /pcl_render_node/use_avia_pattern；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("use_avia_pattern", use_avia_pattern, 0);
+  // 参数读取：场景几何筛选相关配置，沿用渲染实现中的量纲和阈值解释。
+  // 配置位置：私有 /pcl_render_node/curvature_limit；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：100.0；只有参数服务器中没有该键时才使用。
   nh.param("curvature_limit", curvature_limit, 100.0);
+  // 参数读取：场景空间哈希立方块边长，单位 m，影响视场候选块数量。
+  // 配置位置：私有 /pcl_render_node/hash_cubesize；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：5.0；只有参数服务器中没有该键时才使用。
   nh.param("hash_cubesize", hash_cubesize, 5.0);
+  // 参数读取：VLP32 风格扫描模式开关，属于模拟采样模式。
+  // 配置位置：私有 /pcl_render_node/use_vlp32_pattern；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("use_vlp32_pattern", use_vlp32_pattern, 0);
+  // 参数读取：MiniCF 风格扫描模式开关；最终模式按后续条件分支确定。
+  // 配置位置：私有 /pcl_render_node/use_minicf_pattern；当前主 launch 未覆盖此键，取下面的缺参回退
+  // 。
+  // 缺参回退：1；只有参数服务器中没有该键时才使用。
   nh.param("use_minicf_pattern", use_minicf_pattern, 1);
+  // 参数读取：OS128 风格扫描模式开关。
+  // 配置位置：私有 /pcl_render_node/use_os128_pattern；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("use_os128_pattern", use_os128_pattern, 0);
+  // 参数读取：OS64 风格扫描模式开关。
+  // 配置位置：私有 /pcl_render_node/use_os64_pattern；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("use_os64_pattern", use_os64_pattern, 0);
+  // 参数读取：GPU 雷达安装俯仰角，单位度；渲染前转换为弧度并组合机身旋转。
+  // 配置位置：私有 /pcl_render_node/lidar_pitch；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：45.0；只有参数服务器中没有该键时才使用。
   nh.param("lidar_pitch", lidar_pitch, 45.0);
+  // 参数读取：合成深度图宽度，单位 px，须与主点/焦距配置配套。
+  // 配置位置：私有 /pcl_render_node/cam_width；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：cam_width 的已有初值（640 px）；主 launch 未额外覆盖此相机键。
   nh.param("cam_width", cam_width, cam_width);
+  // 参数读取：合成深度图高度，单位 px。
+  // 配置位置：私有 /pcl_render_node/cam_height；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：cam_height 的已有初值（480 px）；主 launch 未额外覆盖此相机键。
   nh.param("cam_height", cam_height, cam_height);
+  // 参数读取：针孔水平焦距，单位 px，必须为正。
+  // 配置位置：私有 /pcl_render_node/cam_fx；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：cam_fx 的已有初值（约 387.229 px）；主 launch 未额外覆盖此相机键。
   nh.param("cam_fx", cam_fx, cam_fx);
+  // 参数读取：针孔垂直焦距，单位 px，必须为正。
+  // 配置位置：私有 /pcl_render_node/cam_fy；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：cam_fy 的已有初值（约 387.229 px）；主 launch 未额外覆盖此相机键。
   nh.param("cam_fy", cam_fy, cam_fy);
+  // 参数读取：针孔主点水平坐标，单位 px。
+  // 配置位置：私有 /pcl_render_node/cam_cx；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：cam_cx 的已有初值（约 321.046 px）；主 launch 未额外覆盖此相机键。
   nh.param("cam_cx", cam_cx, cam_cx);
+  // 参数读取：针孔主点垂直坐标，单位 px。
+  // 配置位置：私有 /pcl_render_node/cam_cy；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：cam_cy 的已有初值（约 243.450 px）；主 launch 未额外覆盖此相机键。
   nh.param("cam_cy", cam_cy, cam_cy);
 
+  // 参数读取：GPU 渲染后处理配置开关，具体效果由渲染器实现决定。
+  // 配置位置：私有 /pcl_render_node/use_gaussian_filter；当前主 launch 未覆盖此键，取下面的缺参回退
+  // 。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("use_gaussian_filter", use_gaussian_filter, 0);
 
   // dyn parameters
+  // 参数读取：是否启用动态障碍仿真；默认关闭，启用后由动态回调更新场景点云。
+  // 配置位置：私有 /pcl_render_node/dynobj_enable；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("dynobj_enable", dynobj_enable, 0);
+  // 参数读取：动态障碍的几何尺寸尺度，单位 m，具体解释随障碍类型变化。
+  // 配置位置：私有 /pcl_render_node/dynobject_size；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.0；只有参数服务器中没有该键时才使用。
   nh.param("dynobject_size", dynobject_size, 0.0);
+  // 参数读取：动态障碍数量；仅启用动态障碍分支后参与初始化。
+  // 配置位置：私有 /pcl_render_node/dynobject_num；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("dynobject_num", dynobject_num, 0);
+  // 参数读取：动态障碍运动模式配置，实际运动分支见 dynobjGenerate()。
+  // 配置位置：私有 /pcl_render_node/dyn_mode；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("dyn_mode", dyn_mode, 0);
+  // 参数读取：动态障碍速度尺度，单位 m/s。
+  // 配置位置：私有 /pcl_render_node/dyn_velocity；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.0；只有参数服务器中没有该键时才使用。
   nh.param("dyn_velocity", dyn_velocity, 0.0);
 
+  // 参数读取：是否加载额外机身点云模型；保留上游多机仿真能力，默认主链路不依赖它。
+  // 配置位置：私有 /pcl_render_node/use_uav_extra_model；当前主 launch 未覆盖此键，取下面的缺参回退
+  // 。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("use_uav_extra_model", use_uav_extra_model, 0);
 
+  // 参数读取：是否启用仿真器独立的几何碰撞检查，默认关闭；与规划器安全检查不是同一个开关。
+  // 配置位置：私有 /pcl_render_node/collisioncheck_enable；当前主 launch 未覆盖此键，取下面的缺参回
+  // 退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("collisioncheck_enable", collisioncheck_enable, 0);
+  // 参数读取：仿真器独立碰撞检查的距离尺度，单位 m，不等同于规划器双圆柱模型。
+  // 配置位置：私有 /pcl_render_node/collision_range；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.3；只有参数服务器中没有该键时才使用。
   nh.param("collision_range", collision_range, 0.3);
 
+  // 参数读取：调试点云输出配置，保留上游文件输出分支。
+  // 配置位置：私有 /pcl_render_node/output_pcd；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("output_pcd", output_pcd, 0);
+  // 参数读取：GPU 分支：随机地图时从话题接收场景，PCD 模式下按程序参数加载文件。
+  // 配置来源：simulator.xml → /pcl_render_node/use_global_map_topic；该GPU 分支启用时取 true。
+  // 缺参回退：false；只有参数服务器中没有该键时才使用。
   nh.param("use_global_map_topic", use_global_map_topic, false);
 
+  // 参数读取：感知节点的场景 x 尺寸参数，单位 m，不是 GridMap 的局部窗口大小。
+  // 配置来源：simulator.xml → /pcl_render_node/map/x_size；正常默认启动取 40.0。
+  // 无缺省实参；当前代码直接调用 getParam()，返回结果应结合本分支的上游配置理解。
   nh.getParam("map/x_size", x_size);
+  // 参数读取：感知节点的场景 y 尺寸参数，单位 m。
+  // 配置来源：simulator.xml → /pcl_render_node/map/y_size；正常默认启动取 40.0。
+  // 无缺省实参；当前代码直接调用 getParam()，返回结果应结合本分支的上游配置理解。
   nh.getParam("map/y_size", y_size);
+  // 参数读取：感知节点的场景 z 尺寸参数，单位 m。
+  // 配置来源：simulator.xml → /pcl_render_node/map/z_size；正常默认启动取 5.0。
+  // 无缺省实参；当前代码直接调用 getParam()，返回结果应结合本分支的上游配置理解。
   nh.getParam("map/z_size", z_size);
 
   // subscribe other uav pos
+  // 参数读取：多机仿真的机器人数量，默认 1。
+  // 配置位置：私有 /pcl_render_node/uav_num；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：1；只有参数服务器中没有该键时才使用。
   nh.param("uav_num", drone_num, 1);
+  // 参数读取：本机在多机列表中的编号；相关订阅跳过自身索引。
+  // 配置位置：私有 /pcl_render_node/drone_id；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   nh.param("drone_id", drone_id, 0);
   other_uav_pos.resize(drone_num);
   other_uav_rcv_time.resize(drone_num);
@@ -977,6 +1147,10 @@ int main(int argc, char **argv) {
     topic += "/body_pose";
     cout << topic << endl;
     subs[i] =
+    // 运行连接（接收入口）：可选其他机器人 Odometry，循环按 /quad_i/body_pose 注册并跳过本机，供多
+    // 机几何显示/模拟遮挡。
+    // 队列容量：1000 条消息，不是发布/规划频率。 到达后交给 boost::bind(&multiOdometryCallback, _1,
+    // i)。
     nh.subscribe<nav_msgs::Odometry>(topic, 1000, boost::bind(&multiOdometryCallback, _1, i));
   }
 
@@ -1025,6 +1199,9 @@ int main(int argc, char **argv) {
                        use_os128_pattern, use_minicf_pattern);
 
   if (use_global_map_topic) {
+    // 运行连接（接收入口）：感知器私有全局场景输入，经 remap 接 /map_generator/global_cloud；只有场
+    // 景和机身状态都就绪才渲染。
+    // 队列容量：1 条消息，不是发布/规划频率。 到达后交给 rcvGlobalPointCloudCallBack。
     global_map_sub = nh.subscribe("global_map", 1, rcvGlobalPointCloudCallBack);
   } else {
     if (argc < 2) {
@@ -1136,29 +1313,58 @@ int main(int argc, char **argv) {
 
   // subscribe point cloud
   std::string body_pose_topic;
+  // 参数读取：机身 Odometry 接口；默认仿真 /quad_0/body_pose，真机由父 launch 切到
+  // /LIO/odom_vehicle。
+  // 配置来源：run.launch → /body_pose_topic；正常默认启动取 /quad_0/body_pose。
+  // 缺参回退：std::string("/quad_0/body_pose")；只有参数服务器中没有该键时才使用。
   ros::param::param<std::string>("/body_pose_topic", body_pose_topic, std::string("/quad_0/body_pose"));
+  // 运行连接（接收入口）：机身 Odometry 接口，实际名称由 /body_pose_topic 指定；默认仿真
+  // /quad_0/body_pose，接入规划/控制/感知/显示相应回调。
+  // 队列容量：50 条消息，不是发布/规划频率。 到达后交给 rcvOdometryCallback。
   odom_sub = nh.subscribe(body_pose_topic, 50, rcvOdometryCallback);
 
   // publishers
   //   pub_dyncloud = nh.advertise<sensor_msgs::PointCloud2>("/pcl_render_node/dyn_cloud", 10);
   // pub_intercloud = nh.advertise<sensor_msgs::PointCloud2>("/pcl_render_node/explored_cloud", 10);
+  // 运行连接（输出入口）：感知器可选动态物体显示点云，属于模拟场景调试接口。
+  // 队列容量：10 条消息，不是发布/规划频率。
   pub_dyncloud = nh.advertise<sensor_msgs::PointCloud2>("dyn_cloud", 10);
   if (useDepthSensor()) {
+    // 运行连接（输出入口）：模拟相机位姿输出，默认 /quad_0/camera_pose，供 depth 分支同步融合。
+    // 队列容量：10 条消息，不是发布/规划频率。
     camera_pose_pub_ = nh.advertise<nav_msgs::Odometry>(quadTopic("camera_pose"), 10);
+    // 运行连接（输出入口）：模拟深度输出，默认 /pcl_render_node/depth，米制 32FC1，供 depth 模式建
+    // 图。
+    // 队列容量：10 条消息，不是发布/规划频率。
     pinhole_depth_pub_ = nh.advertise<sensor_msgs::Image>("depth", 10);
   } else {
+    // 运行连接（输出入口）：模拟传感器坐标下的点云调试输出，区别于默认规划输入的世界系 cloud。
+    // 队列容量：10 条消息，不是发布/规划频率。
     pub_intercloud = nh.advertise<sensor_msgs::PointCloud2>("sensor_cloud", 10);
+    // 运行连接（输出入口）：模拟雷达的世界系观测输出，默认 /pcl_render_node/cloud，供规划器 lidar
+    // 建图。
+    // 队列容量：10 条消息，不是发布/规划频率。
     pub_cloud = nh.advertise<sensor_msgs::PointCloud2>("cloud", 10);
+    // 运行连接（输出入口）：模拟雷达位姿输出，默认 /quad_0/lidar_pose，与激光观测使用的姿态对应。
+    // 队列容量：10 条消息，不是发布/规划频率。
     lidar_pose_pub_ = nh.advertise<nav_msgs::Odometry>(quadTopic("lidar_pose"), 10);
   }
+  // 运行连接（输出入口）：感知器可选额外机身/多机几何显示接口，沿用上游仿真命名。
+  // 队列容量：10 条消息，不是发布/规划频率。
   pub_uavcloud = nh.advertise<sensor_msgs::PointCloud2>("uav_cloud", 10);
+  // 运行连接（输出入口）：感知计算耗时的调试输出，借用 PoseStamped 承载统计值，不是机器人目标位姿。
+  // 队列容量：10 条消息，不是发布/规划频率。
   comp_time_pub = nh.advertise<geometry_msgs::PoseStamped>("simulator_compute_time", 10);
+  // 运行连接（输出入口）：GPU 感知分支的独立碰撞检查调试点云，不取代规划器安全回调。
+  // 队列容量：10 条消息，不是发布/规划频率。
   pub_collisioncloud = nh.advertise<sensor_msgs::PointCloud2>("collision_cloud", 10);
   double sensing_duration = 1.0 / sensing_rate;
 
   t_init = ros::Time::now();
 
+  // 定时任务：按 sensing_rate 生成模拟观测，缺省 10 Hz；与机身状态订阅频率分开。
   local_sensing_timer = nh.createTimer(ros::Duration(sensing_duration), renderSensedPoints);
+  // 定时任务：按 sensing_rate 更新可选动态场景，缺省 10 Hz；dynobj_enable 未启用时不推进该场景。
   dynobj_timer = nh.createTimer(ros::Duration(sensing_duration), dynobjGenerate);
 
   sensor2body << 0.0, 0.0, 1.0, 0.0,

@@ -1,4 +1,7 @@
+# 启动树对应的 catkin 构建入口：构建全局场景点云发布节点，入口与各场景算法从 src/*.cpp 汇总。
+# 修改注释不改变目标；运行时通过 roslaunch 的 pkg/type 定位这里生成的程序。
 cmake_minimum_required(VERSION 2.8.3)
+# 声明本构建项目名，与 package.xml 的包名及导出目标命名对应。
 project(mockamap)
 
 ## Compile as C++11, supported in ROS Kinetic and newer
@@ -10,6 +13,7 @@ ADD_COMPILE_OPTIONS(-std=c++14 )
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 
 ## Find catkin macros and libraries
+# 查找编译/链接所需依赖；找到依赖不代表会启动依赖中的 ROS 节点。
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
@@ -45,6 +49,7 @@ find_package(catkin REQUIRED COMPONENTS
 ##   * add "message_generation" and every package in MSG_DEP_SET to
 ##     find_package(catkin REQUIRED COMPONENTS ...)
 ##   * add "message_runtime" and every package in MSG_DEP_SET to
+# 向下游包导出本包头文件、库和 catkin 依赖，供 find_package(catkin COMPONENTS ...) 使用。
 ##     catkin_package(CATKIN_DEPENDS ...)
 ##   * uncomment the add_*_files sections below as needed
 ##     and list every .msg/.srv/.action file to be processed
@@ -120,6 +125,7 @@ catkin_package(
 
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
+# 设置编译头文件搜索路径；SYSTEM 路径按工具链规则处理依赖头的告警。
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
@@ -138,8 +144,10 @@ include_directories(
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
+# 收集文件形成源列表；本地图生成器的 GLOB 将 src 下所有 cpp 编入同一目标。
 file(GLOB ${PROJECT_NAME}_SRCS src/*.cpp)
 
+# 生成命名的可执行文件，launch 的 type 必须对应此目标生成的程序。
 add_executable(${PROJECT_NAME}_node
     ${${PROJECT_NAME}_SRCS})
 
@@ -154,6 +162,7 @@ add_executable(${PROJECT_NAME}_node
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
+ # 为当前目标链接所需实现库；头文件可见不等于已经完成符号链接。
  target_link_libraries(${PROJECT_NAME}_node
    ${catkin_LIBRARIES}
  )

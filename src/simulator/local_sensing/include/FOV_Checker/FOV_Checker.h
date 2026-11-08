@@ -1,4 +1,7 @@
 // Include Files
+/// @file
+/// 感知视场候选块筛选接口，BoxPointType 来自 ikd-Tree 的公共几何类型。
+/// 使用该类型不等于渲染主链路必然实例化增量 KD-tree；实际调用见渲染节点。
 #pragma once
 #include <math.h>
 #include <cmath>
@@ -8,11 +11,13 @@
 
 #define eps_value 1e-6
 
+/// @brief 保存箱体一个面的四个顶点，供 check_surface() 检查。
 struct PlaneType{
     Eigen::Vector3d p[4];
 };
 
 
+/// @brief 保存场景边界与空间块边长，并提供从箱体到点的多层次视场判断。
 class FOV_Checker{
 public:
     FOV_Checker();

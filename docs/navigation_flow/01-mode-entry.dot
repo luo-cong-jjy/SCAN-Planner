@@ -1,0 +1,36 @@
+digraph Navigation {
+graph [rankdir=TB, bgcolor="white", pad=0.25, nodesep=0.35, ranksep=0.6, fontname="Noto Sans CJK SC", label="三种导航模式：目标入口与初始参考", labelloc=t, fontsize=20];
+node [shape=box, style="rounded,filled", fontname="Noto Sans CJK SC", fontsize=12, margin="0.14,0.1"];
+edge [fontname="Noto Sans CJK SC", fontsize=10, color="#667085", arrowsize=0.7];
+init [label="init(nh)\n读取参数、创建模块、注册回调\nmode 2 在初始化前段加载关键点 YAML", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+choice [label="navi_mode_", shape=diamond, fillcolor="#fff3d9", color="#aa7c2c"];
+in1 [label="mode 1：RViz 点击\n/move_base_simple/goal", shape=box, fillcolor="#e9f8ed", color="#3a8251"];
+cb1 [label="rvizGoalCallback()\n把单目标包装成单点 Path", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+wp1 [label="waypointCallback()\n取目标 XY，z 用首次机身高度\n内部：Manager::planGlobalTraj()\n再 adjustGlobalTargetIfOccupied()", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+r1 [label="参考生成成功\nhave_target_ / have_new_target_ = true", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+wait2 [label="mode 2：预设关键点\n等待机身位姿，spinOnce() 处理回调", shape=box, fillcolor="#e9f8ed", color="#3a8251"];
+given [label="planGlobalTrajbyGivenWps()\n复制活动序列，current_wp_=0", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+next [label="planNextWaypoint()\n内部：setStartStateFromOdomOrCurrentTraj()\n→ Manager::planGlobalTraj()\n→ adjustGlobalTargetIfOccupied()", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+r2 [label="首段参考成功\nchangeFSMExecState(GEN_NEW_TRAJ)", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+in3 [label="mode 3：外部路线\n/initial_path", shape=box, fillcolor="#e9f8ed", color="#3a8251"];
+cb3 [label="pathCallback()\n筛选路径点，z 加 body_height_", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+wps3 [label="planGlobalTrajByWaypoints()\n内部：Manager::planGlobalTrajWaypoints()\n再 adjustGlobalTargetIfOccupied()", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+r3 [label="参考生成成功\nhave_target_ / have_new_target_ = true", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+fsm [label="共用 execFSMCallback()\n由执行定时器调度", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+init -> choice [label="", style=solid];
+choice -> in1 [label="1", style=solid];
+choice -> wait2 [label="2", style=solid];
+choice -> in3 [label="3", style=solid];
+in1 -> cb1 [label="消息到达", style=dashed];
+cb1 -> wp1 [label="直接调用", style=solid];
+wp1 -> r1 [label="成功", style=solid];
+wait2 -> given [label="位姿就绪", style=solid];
+given -> next [label="直接调用", style=solid];
+next -> r2 [label="成功返回", style=solid];
+in3 -> cb3 [label="消息到达", style=dashed];
+cb3 -> wps3 [label="直接调用", style=solid];
+wps3 -> r3 [label="成功", style=solid];
+r1 -> fsm [label="更新标志/状态，后续定时处理", style=dashed];
+r2 -> fsm [label="后续处理 GEN_NEW_TRAJ", style=dashed];
+r3 -> fsm [label="更新标志/状态，后续定时处理", style=dashed];
+}

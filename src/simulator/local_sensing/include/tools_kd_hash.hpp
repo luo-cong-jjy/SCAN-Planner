@@ -45,6 +45,9 @@ Dr. Fu Zhang < fuzhang@hku.hk >.
  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  POSSIBILITY OF SUCH DAMAGE.
 */
+/// @file
+/// 感知组件的空间哈希辅助模板，坐标离散后用作点/块索引，减少场景候选搜索范围。
+/// 它与规划器 GridMap 的固定取模占用数组是两种不同的数据组织方式。
 #pragma once
 #include "unordered_map"
 #include "iostream"

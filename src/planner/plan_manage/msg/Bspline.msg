@@ -1,10 +1,19 @@
+# 规划器与执行端的样条接口；字段定义由 catkin message_generation 生成多语言消息。
+# 位置控制点和 knots 是轨迹重建的核心数据，采样点列表不能替代控制点。
+# 样条次数 p，当前规划器发布三次样条；此处 order 命名不是控制点数量。
 int32 order
+# 轨迹编号，由管理器更新局部结果时递增，供执行和日志关联。
 int64 traj_id
+# 规划端轨迹起始 ROS 时刻；开环执行据此计时，闭环另维护接收后的 exec_time。
 time start_time
 
+# 节点时间向量，重建时覆盖构造函数生成的默认均匀节点。
 float64[] knots
+# 世界坐标控制点，单位 m；按照样条控制点顺序排列。
 geometry_msgs/Point[] pos_pts
 
+# 保留的朝向样条接口；当前闭环控制器主要由位置轨迹前视方向估计 yaw。
 float64[] yaw_pts
+# 保留朝向接口的时间间隔，单位 s；当前主发布路径未设置该朝向轨迹。
 float64 yaw_dt
 

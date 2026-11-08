@@ -1,105 +1,358 @@
 <launch>
+  <!--
+    职责：集中配置规划器的输入、状态机、局部地图和轨迹优化，并启动 scan_planner_node；
+          同时为 run.launch 中单独启动的闭环控制器设置参数。
+    启动文件树：run.launch → advanced_param.xml → scan_planner_node → FSM / Manager / GridMap / Optimizer。
+
+    参数作用域：
+      1. arg 是 launch 变量，由父文件传入或使用本文件的 default，不会自动写入参数服务器。
+      2. node 内的相对 param 写入 /scan_planner_node/...，由私有 NodeHandle("~") 读取。
+      3. 文件末尾的控制参数位于 node 外，写入 /closed_loop_controller/...。
+      4. remap 修改 ROS 名称解析，不负责数据转换；传感器坐标变换由 GridMap 完成。
+
+    主要读取入口（路径相对于 src/planner/）：
+      plan_manage/src/scan_replan_fsm.cpp       ：SCANReplanFSM::init()
+      plan_env/src/grid_map.cpp                ：GridMap::initMap()
+      plan_manage/src/planner_manager.cpp      ：SCANPlannerManager::initPlanModules()
+      bspline_opt/src/bspline_optimizer.cpp    ：BsplineOptimizer::setParam()
+      plan_manage/src/closed_loop_controller.cpp：loadParams()
+  -->
+
+  <!-- 1. 父 launch 传入的接口参数：这些 arg 没有默认值，正常由 run.launch 的 include 提供。 -->
+
+  <!-- 是否使用真机输入；在本文件中用于设置 grid_map/need_extrinsic，并写入兼容参数。 -->
   <arg name="is_real_world"/>
+
+  <!-- 导航输入模式：1=RViz 单目标，2=预设关键点序列，3=外部 /initial_path 参考路径。 -->
   <arg name="navi_mode"/>
+
+  <!-- 传感器类型：lidar=点云建图；depth=深度图与位姿同步后反投影建图。 -->
   <arg name="sensor_type"/>
+
+  <!-- 机身位姿话题，类型 nav_msgs/Odometry；默认仿真为 /quad_0/body_pose。 -->
   <arg name="body_pose_topic"/>
+
+  <!-- 传感器位姿话题，类型 nav_msgs/Odometry；用于确定射线原点和观测坐标变换。 -->
   <arg name="sensor_pose_topic"/>
+
+  <!-- 激光点云话题，类型 sensor_msgs/PointCloud2；仅 lidar 输入分支订阅。 -->
   <arg name="cloud_topic"/>
+
+  <!-- 点云 XYZ 是否已在世界坐标系：true 直接使用，false 按传感器位姿转换。 -->
   <arg name="cloud_is_world"/>
+
+  <!-- 深度图话题，类型 sensor_msgs/Image；仅 depth 输入分支订阅。 -->
   <arg name="depth_topic"/>
+
+  <!-- 深度相机主点横坐标，单位 px；与输入深度图的分辨率和标定对应。 -->
   <arg name="cx"/>
+
+  <!-- 深度相机主点纵坐标，单位 px。 -->
   <arg name="cy"/>
+
+  <!-- 深度相机水平方向焦距，单位 px。 -->
   <arg name="fx"/>
+
+  <!-- 深度相机垂直方向焦距，单位 px。 -->
   <arg name="fy"/>
 
-  <!-- public parameters -->
+  <!--
+    2. 本文件的共享规划配置。
+    $(arg ...) 在下面多个 param 中复用同一值，使管理器、优化器和控制器的名义限值对应。
+    若要从 run.launch 命令行覆盖这些 arg，父文件还需声明并向本 include 透传。
+  -->
+
+  <!-- 名义最大速度，单位 m/s；用于轨迹初始化、优化与检查，并作为闭环控制器的 x 轴速度上限。 -->
   <arg name="max_vel" default="0.75"/>
+
+  <!-- 名义最大加速度，单位 m/s²；用于轨迹时间估计、优化和可行性检查。 -->
   <arg name="max_acc" default="0.5"/>
+
+  <!-- 局部规划参考距离，单位 m；FSM 沿全局参考累计距离选目标，管理器也复用该尺度。 -->
   <arg name="planning_horizon" default="3.5"/>
 
-  <!-- main node -->
+  <!--
+    3. 规划节点：pkg=ROS 包名，type=编译生成的可执行文件名，name=运行时节点名。
+    output="screen" 将节点终端输出显示在启动终端。
+    clear_params="true" 在启动前清理该节点私有命名空间内的旧参数，再加载本次配置；
+    不会清空整个 ROS 参数服务器，也不会清除末尾独立的控制器命名空间。
+    源码入口为 plan_manage/src/scan_planner_node.cpp，内部初始化 FSM 后进入 ros::spin()。
+  -->
   <node pkg="scan_planner" name="scan_planner_node" type="scan_planner_node" output="screen" clear_params="true">
+
+    <!-- 3.1 感知输入：绝对名称 /grid_map/... 是代码中的接口，to 指向父 launch 选择的实际话题。 -->
+
+    <!-- 机身位姿输入：GridMap 用它维护随动显示坐标系；FSM 另行读取 /body_pose_topic 全局参数订阅。 -->
     <remap from="/grid_map/body_pose" to="$(arg body_pose_topic)"/>
+
+    <!-- 传感器位姿输入：lidar 分支直接订阅，depth 分支与深度图做近似时间同步。 -->
     <remap from="/grid_map/sensor_pose" to="$(arg sensor_pose_topic)"/>
+
+    <!-- 显式字符串类型；GridMap::initMap() 据此选择 lidar 或 depth 的订阅/融合分支。 -->
     <param name="grid_map/sensor_type" value="$(arg sensor_type)" type="str"/>
+
+    <!-- 激光点云的名称重映射；sensor_type=depth 时，GridMap 不使用该点云订阅分支。 -->
     <remap from="/grid_map/cloud" to="$(arg cloud_topic)"/>
+
+    <!-- GridMap::cloudCallback() 的坐标系开关；不改变 PointCloud2 内容，只决定如何解释和变换 XYZ。 -->
     <param name="grid_map/cloud_is_world" value="$(arg cloud_is_world)"/>
+
+    <!-- 深度图的名称重映射；sensor_type=lidar 时，GridMap 不使用深度图订阅分支。 -->
     <remap from="/grid_map/depth" to="$(arg depth_topic)"/>
+
+    <!--
+      是否将输入位姿再乘传感器外参；当前随 is_real_world 取值。
+      外参矩阵在 GridMap::initMap() 中定义，分别由 sensorPoseCallback()/depthPoseCallback() 使用。
+      接入不同安装方式时应核对输入位姿所属坐标系，避免将已含外参的传感器位姿重复变换。
+    -->
     <param name="grid_map/need_extrinsic" value="$(arg is_real_world)" type="bool"/>
 
-    <!-- planning fsm -->
+    <!-- 3.2 状态机：SCANReplanFSM::init() 读取，主要在 execFSMCallback()/checkCollisionCallback() 使用。 -->
+
+    <!-- 导航模式，整数 1/2/3；决定 RViz 目标、关键点文件或参考路径的输入入口。 -->
     <param name="fsm/navi_mode" value="$(arg navi_mode)" type="int"/>
+
+    <!--
+      常规重规划的起点距离阈值，单位 m。
+      EXEC_TRAJ 中，当前时刻轨迹采样位置到本条轨迹起点的欧氏距离小于该值时，暂不常规重规划。
+      此处比较的是轨迹采样位置，不是直接比较当前里程计位置；安全回调可另外触发重规划。
+    -->
     <param name="fsm/thresh_replan" value="1.0" type="double"/>
+
+    <!-- 当前轨迹采样位置距最终目标小于该值时，暂不常规重规划；单位 m，不是控制器停车误差阈值。 -->
     <param name="fsm/thresh_no_replan" value="0.1" type="double"/>
+
+    <!-- getLocalTarget() 沿全局参考轨迹累计的前视距离，单位 m；参考剩余距离较短时使用终点。 -->
     <param name="fsm/planning_horizon" value="$(arg planning_horizon)" type="double"/>
+
+    <!--
+      急停时间阈值，单位 s；参数名末尾的下划线是现有接口的一部分。
+      安全回调发现碰撞风险且立即重规划失败后，若预测碰撞距当前不足该时间，则进入 EMERGENCY_STOP。
+    -->
     <param name="fsm/emergency_time_" value="1.0" type="double"/>
-    <param name="fsm/fail_safe" value="true" type="bool"/> 
+
+    <!--
+      急停后的自动恢复开关，不是碰撞检测总开关。
+      true：速度降到 0.1 m/s 以下后，按 need_hover_stop_ 决定重规划或等待新目标；false 不自动退出急停。
+    -->
+    <param name="fsm/fail_safe" value="true" type="bool"/>
+
+    <!-- FSM 累计连续规划失败的次数上限；达到后转入停止并等待新目标，不是秒数或优化器迭代次数。 -->
     <param name="fsm/max_replan_fail_count" value="1000" type="int"/>
+
+    <!-- 保留的兼容参数：当前 FSM 源码未读取此键；实际真机切换由父 launch 条件与 need_extrinsic 等控制。 -->
     <param name="fsm/is_real_world" value="$(arg is_real_world)" type="bool"/>
 
-    <!-- sliding map -->
+    <!--
+      3.3 滑动占用地图和碰撞几何：GridMap::initMap() 读取。
+      默认分辨率下的窗口为 200 × 200 × 100 个体素；尺寸和分辨率共同决定缓冲区规模。
+      这里是局部建图窗口，与 simulator.xml 中仿真全局场景的大小不同。
+    -->
+
+    <!-- 单个体素的边长，单位 m，必须为正；减小它会增加地图内存、更新和搜索开销。 -->
     <param name="grid_map/resolution" value="0.05" />
+
+    <!-- 滑动窗口在世界 x 方向的长度，单位 m。 -->
     <param name="grid_map/sliding_map_size_x" value="10.0" />
+
+    <!-- 滑动窗口在世界 y 方向的长度，单位 m。 -->
     <param name="grid_map/sliding_map_size_y" value="10.0" />
+
+    <!-- 滑动窗口在世界 z 方向的长度，单位 m；不是可视化裁剪高度。 -->
     <param name="grid_map/sliding_map_size_z" value="5.0" />
+
+    <!--
+      触发窗口平移的位移阈值，单位 m；初始化时向上取整为体素数，且至少为 1 个体素。
+      updateSlidingMap() 按中心体素索引差的最大绝对分量判断，不是平移更新周期。
+    -->
     <param name="grid_map/map_sliding_thresh" value="0.2"/>
+
+    <!-- 双圆柱碰撞模型的水平半径，单位 m；rebuildInflationOffsets() 用它构造障碍物的水平膨胀偏移。 -->
     <param name="grid_map/double_cylinder_radius" value="0.25" />
+
+    <!--
+      前后两个圆柱中心距机器人参考点的偏移量，单位 m；两中心间距为该值的 2 倍。
+      getInflateOccupancy(pos,yaw) 在 pos ± offset*(cos(yaw),sin(yaw),0) 查询膨胀占用。
+    -->
     <param name="grid_map/double_cylinder_offset" value="0.18" />
+
+    <!-- 相对障碍体素向上膨胀的距离，单位 m；转换为体素数后形成垂直碰撞裕量。 -->
     <param name="grid_map/obstacles_inflation_z_up" value="0.1" />
+
+    <!-- 相对障碍体素向下膨胀的距离，单位 m；可与向上裕量独立配置。 -->
     <param name="grid_map/obstacles_inflation_z_down" value="0.1" />
+
+    <!--
+      mode 3 的参考路径高度偏移，单位 m；FSM::pathCallback() 将其加到 /initial_path 的 z 上。
+      当前默认 mode 1 的目标 z 来自首次机身位姿；此值不会直接改变圆柱膨胀高度或仿真初始 z。
+    -->
     <param name="grid_map/body_height" value="0.4" />
 
-    <!-- depth camera intrinsics -->
+    <!--
+      3.4 深度相机内参：由父 launch 选取标定值，仅用于 depth 分支的深度反投影。
+      相机坐标：X=(u-cx)*Z/fx，Y=(v-cy)*Z/fy；图像缩放后应同步更新内参。
+    -->
+
+    <!-- 主点横坐标 cx，单位 px。 -->
     <param name="grid_map/cx" value="$(arg cx)"/>
+
+    <!-- 主点纵坐标 cy，单位 px。 -->
     <param name="grid_map/cy" value="$(arg cy)"/>
+
+    <!-- 水平焦距 fx，单位 px，必须为正。 -->
     <param name="grid_map/fx" value="$(arg fx)"/>
+
+    <!-- 垂直焦距 fy，单位 px，必须为正。 -->
     <param name="grid_map/fy" value="$(arg fy)"/>
 
-    <!-- depth -->
+    <!-- 3.5 深度预处理：depthPoseCallback()/projectDepthImage() 使用；lidar 不走该反投影流程。 -->
+
+    <!--
+      有效障碍深度的上限，单位 m；超出上限或原始深度为 0 时，代码生成超量程射线以更新自由空间，
+      而非将该像素直接作为有效障碍端点；最终射线长度仍受 max_ray_length 限制。
+    -->
     <param name="grid_map/depth_filter_maxdist"   value="3.0"/>
+
+    <!-- 有效深度下限，单位 m；非零且小于该值的像素直接跳过。 -->
     <param name="grid_map/depth_filter_mindist"   value="0.3"/>
+
+    <!-- 深度图四周跳过的边缘宽度，单位 px；采样范围由该边界内缩。 -->
     <param name="grid_map/depth_filter_margin"    value="1"/>
+
+    <!--
+      整数深度到米的比例因子，必须为正：Z[m]=raw_depth/k_depth_scaling_factor，1000 对应毫米数据。
+      输入为 32FC1 时，depthPoseCallback() 先按该因子转换为 16 位整数，再进行上述反投影。
+    -->
     <param name="grid_map/k_depth_scaling_factor" value="1000.0"/>
+
+    <!-- 横向和纵向的像素采样步长，须为正整数；2 表示每个方向隔一个像素采样，减少反投影开销。 -->
     <param name="grid_map/skip_pixel" value="2"/>
 
-    <!-- local fusion -->
+    <!--
+      3.6 占用融合：深度与激光观测最终都进入 raycastProcess()。
+      概率参数须位于 (0,1)，代码通过 logit(p)=ln(p/(1-p)) 转为 log-odds 更新量和阈值；
+      通常 p_hit>0.5、p_miss<0.5，且 p_min<p_occ<p_max。
+    -->
+
+    <!-- 命中证据的更新概率，logit(p_hit)>0，使相应体素更倾向占用；不是障碍物检测准确率。 -->
     <param name="grid_map/p_hit" value="0.85"/>
+
+    <!-- 未命中/自由空间证据的更新概率，logit(p_miss)<0，使体素更倾向空闲；不是 1-p_hit。 -->
     <param name="grid_map/p_miss" value="0.30"/>
+
+    <!-- 占用置信度的截断下限，防止空闲证据无限累计；不是观测有效性的概率阈值。 -->
     <param name="grid_map/p_min" value="0.12"/>
+
+    <!-- 占用置信度的截断上限，防止命中证据无限累计，并允许后续未命中观测逐步清除占用。 -->
     <param name="grid_map/p_max" value="0.98"/>
+
+    <!-- 体素被判为占用的概率阈值；代码比较其 log-odds，并据此维护膨胀占用层。 -->
     <param name="grid_map/p_occ" value="0.80"/>
+
+    <!-- 地图融合的最大射线长度，单位 m；更远观测截断到该范围，截断点不按真实障碍命中处理。 -->
     <param name="grid_map/max_ray_length" value="5.0"/>
+
+    <!--
+      显示点云的高度上限相对传感器位置的偏移，单位 m：高于 ray_pos.z+vis_height 的点不发布显示。
+      用于占用/膨胀/未知点云显示裁剪，不改变内部占用地图或规划碰撞查询的高度范围。
+    -->
     <param name="grid_map/vis_height" value="0.3" type="double"/>
 
-    <!-- planner manager -->
+    <!-- 3.7 轨迹管理器：initPlanModules() 读取；组织初始化、B 样条优化、时间调整和结果检查。 -->
+
+    <!-- 名义速度上限，单位 m/s；参与初始化和样条物理限值设置，最终采样检查还叠加 vel_tolerance。 -->
     <param name="manager/max_vel" value="$(arg max_vel)" type="double"/>
+
+    <!-- 名义加速度上限，单位 m/s²；参与时间估计和样条检查，最终采样检查还叠加 acc_tolerance。 -->
     <param name="manager/max_acc" value="$(arg max_acc)" type="double"/>
+
+    <!-- 名义 jerk 上限，单位 m/s³；当前源码只读取并保存 max_jerk_，未用于限幅或可行性检查。 -->
     <param name="manager/max_jerk" value="4" type="double"/>
+
+    <!-- 控制点间距的目标尺度，单位 m；用于估计时间间隔和采样密度，不保证优化后控制点严格等距。 -->
     <param name="manager/control_points_distance" value="0.2" type="double"/>
+
+    <!--
+      UniformBspline::checkFeasibility() 的相对容差，无量纲；0.5 表示各轴检查允许名义限值的 1.5 倍。
+      该函数用于判断是否需要重新分配时间；与下面按物理单位相加的采样检查容差不同。
+    -->
     <param name="manager/feasibility_tolerance" value="0.5" type="double"/>
+
+    <!-- 管理器使用的距离尺度，单位 m；当前用于判断沿用旧轨迹时初始采样点数量是否异常过多。 -->
     <param name="manager/planning_horizon" value="$(arg planning_horizon)" type="double"/>
 
-    <!-- trajectory optimization -->
+    <!--
+      3.8 B 样条优化：BsplineOptimizer::setParam() 读取权重、dist0 和名义速度/加速度上限。
+      Rebound 阶段：平滑性 + 避障距离 + 可行性；Refine 阶段：平滑性 + 参考贴合 + 可行性。
+      权重调节代价项的相对影响，不是硬约束；求解器为 L-BFGS，结果仍需后续检查。
+      optimization 下的 vel_tolerance/acc_tolerance 实际由管理器读取，见各参数注释。
+    -->
+
+    <!-- 平滑性权重；当前默认代价使用控制点三阶差分的平方和，作为 jerk 相关的平滑度度量。 -->
     <param name="optimization/lambda_smooth" value="1.0" type="double"/>
+
+    <!-- Rebound 避障距离代价的初始权重；重启优化时内部可增大该权重以加强避障。 -->
     <param name="optimization/lambda_collision" value="1.0" type="double"/>
+
+    <!-- 速度和加速度超限的软惩罚权重；提高它加强可行性代价，但仍须通过结果检查。 -->
     <param name="optimization/lambda_feasibility" value="0.1" type="double"/>
+
+    <!-- Refine 阶段贴合参考轨迹的权重，由 calcFitnessCost() 使用；不直接加入 Rebound 的总代价。 -->
     <param name="optimization/lambda_fitness" value="1.0" type="double"/>
+
+    <!--
+      避障代价中的期望间距，单位 m；沿构造的避障方向计算控制点相对基点的投影距离。
+      它与地图中的机器人半径、障碍膨胀裕量用途不同，不能直接等同于真实障碍物的欧氏安全距离。
+    -->
     <param name="optimization/dist0" value="0.2" type="double"/>
+
+    <!-- 优化器速度软惩罚的名义阈值，单位 m/s；通过控制点差分计算各轴速度。 -->
     <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
+
+    <!--
+      管理器最终速度采样检查的加性容差，单位 m/s。
+      checkDynamicFeasibility() 检查速度向量范数不超过 manager/max_vel + 本值；不是百分比。
+    -->
     <param name="optimization/vel_tolerance" value="1.0" type="double"/>
+
+    <!-- 优化器加速度软惩罚的名义阈值，单位 m/s²；通过控制点二阶差分估计各轴加速度。 -->
     <param name="optimization/max_acc" value="$(arg max_acc)" type="double"/>
+
+    <!-- 管理器最终加速度采样检查的加性容差，单位 m/s²；允许范数上限为 manager/max_acc + 本值。 -->
     <param name="optimization/acc_tolerance" value="1.0" type="double"/>
 
   </node>
 
-  <!-- trajectory tracking -->
+  <!--
+    4. 闭环跟踪参数：此处已离开 scan_planner_node 的 node 标签。
+    参数实际位于 /closed_loop_controller/...，由该节点的私有 loadParams() 读取。
+    控制器由父 run.launch 按 controller_mode 条件启动；仅写入这些参数不会启动控制器。
+    世界系水平速度指令 = 轨迹速度前馈 + kp_pos*位置误差，再旋转到机身系并限幅；
+    转向角速度由 kp_yaw*归一化朝向误差得到。open_loop 分支不使用这组跟踪参数。
+  -->
+
+  <!-- 估计期望朝向的前视时间，单位 s；使用前视轨迹点方向，不是局部规划距离。 -->
   <param name="closed_loop_controller/time_forward" value="0.8" type="double"/>
+
+  <!-- 朝向误差阈值，单位 rad；绝对误差超过 0.8 rad 时先原地转向，并冻结控制端和规划端轨迹进度。 -->
   <param name="closed_loop_controller/heading_error_threshold" value="0.8" type="double"/>
+
+  <!-- 水平位置误差的比例增益，单位 1/s；乘以米制误差后得到叠加到速度前馈上的修正量。 -->
   <param name="closed_loop_controller/kp_pos" value="0.8" type="double"/>
+
+  <!-- 朝向误差的比例增益，单位 1/s；弧度误差乘以该增益得到 rad/s 的角速度指令，再进行限幅。 -->
   <param name="closed_loop_controller/kp_yaw" value="1.5" type="double"/>
+
+  <!-- 机身 x 轴线速度的绝对值上限，单位 m/s；仿真节点也使用该参数作为默认速度限值来源。 -->
   <param name="closed_loop_controller/max_vx" value="$(arg max_vel)" type="double"/>
+
+  <!-- 机身 y 轴线速度的绝对值上限，单位 m/s；控制器还会先限制世界系水平合速度的范数。 -->
   <param name="closed_loop_controller/max_vy" value="0.35" type="double"/>
+
+  <!-- 转向角速度绝对值上限，单位 rad/s；当前控制器代码还将该配置的最大值封顶为 1.0 rad/s。 -->
   <param name="closed_loop_controller/max_vyaw" value="1.0" type="double"/>
+
+  <!-- 轨迹时间结束后，水平位置误差小于此值才发布全零速度，单位 m；与 FSM 的 WAIT_TARGET 判断不同。 -->
   <param name="closed_loop_controller/finish_dist" value="0.15" type="double"/>
 
 </launch>

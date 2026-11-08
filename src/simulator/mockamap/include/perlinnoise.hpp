@@ -1,3 +1,5 @@
+/// @file
+/// Perlin 噪声的置换表和求值接口，仅由可选噪声场景使用；本头文件不发布 ROS 数据。
 #ifndef PERLINNOISE_HPP
 #define PERLINNOISE_HPP
 

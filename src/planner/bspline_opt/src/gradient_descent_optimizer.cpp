@@ -1,8 +1,13 @@
+/// @file
+/// 备用梯度下降求解器：由外部目标函数回调提供代价/梯度，包含步长估计与回溯搜索。
+/// 当前 BsplineOptimizer 主路径调用 lbfgs.hpp 中的 L-BFGS，不调用本类 optimize()。
 #include <bspline_opt/gradient_descent_optimizer.h>
 
 #define RESET "\033[0m"
 #define RED "\033[31m"
 
+/// @brief 检查配置后交替更新两个迭代向量，用 s/y 估计步长并通过 Armijo 条件回溯。
+/// 返回值区分梯度满足阈值、调用方要求返回、迭代上限和数值失败。
 GradientDescentOptimizer::RESULT
 GradientDescentOptimizer::optimize(Eigen::VectorXd &x_init_optimal, double &opt_f)
 {

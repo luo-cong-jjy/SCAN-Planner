@@ -1,0 +1,20 @@
+digraph Navigation {
+graph [rankdir=TB, bgcolor="white", pad=0.25, nodesep=0.35, ranksep=0.6, fontname="Noto Sans CJK SC", label="三种模式共用：从新规划到执行和重规划", labelloc=t, fontsize=20];
+node [shape=box, style="rounded,filled", fontname="Noto Sans CJK SC", fontsize=12, margin="0.14,0.1"];
+edge [fontname="Noto Sans CJK SC", fontsize=10, color="#667085", arrowsize=0.7];
+gen [label="GEN_NEW_TRAJ\nsetStartStateFromOdomOrCurrentTraj()\n→ callReboundReplan()", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+rep [label="REPLAN_TRAJ\nplanFromCurrentTraj()\n→ callReboundReplan()，可更换初值再试", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+chain [label="callReboundReplan() 内部共用调用链\ngetLocalTarget()\n→ Manager::reboundReplan()\n→ 成功后发布 /planning/bspline\n→ displayOptimalTraj()", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+exec [label="EXEC_TRAJ\n监视当前局部轨迹执行", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+retry [label="生成/重规划入口最终失败\n保留原 GEN / REPLAN 状态，下轮重试\nfinishProcess() 达上限后急停（见图 3）", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+next [label="仅 mode 2：还有下一关键点\ncurrent_wp_++ → planNextWaypoint()", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+wait [label="WAIT_TARGET\n清除当前有效目标，等待下一任务", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+gen -> chain [label="调用", style=solid];
+rep -> chain [label="内部可多次尝试", style=solid];
+chain -> exec [label="入口返回成功，迁移状态", style=dashed];
+chain -> retry [label="入口所有尝试均失败", style=dashed];
+exec -> rep [label="满足普通重规划距离条件", style=dashed];
+exec -> next [label="mode 2：近点或段时间结束，且有下一点", style=dashed];
+next -> gen [label="切换目标后进入新规划", style=dashed];
+exec -> wait [label="局部轨迹时间结束，且无需切下一点", style=dashed];
+}

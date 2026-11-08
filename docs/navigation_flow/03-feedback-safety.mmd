@@ -1,0 +1,33 @@
+flowchart TD
+  timer["安全定时器<br/>目标周期 0.05 s"]
+  safe["checkCollisionCallback()<br/>先 updateLocalTrajTimeFreeze()<br/>再采样轨迹并查询膨胀占用"]
+  replan["发现碰撞风险<br/>planFromCurrentTraj() 尝试恢复"]
+  exec["恢复成功 → EXEC_TRAJ"]
+  fail{"恢复失败<br/>距碰撞不足 emergency_time_？"}
+  rep["否 → REPLAN_TRAJ<br/>由执行回调继续尝试"]
+  count["finishProcess()<br/>常规规划失败达到次数上限"]
+  emergency["EMERGENCY_STOP"]
+  stop["执行回调进入停止状态后<br/>callEmergencyStop(odom_pos_)<br/>→ Manager::EmergencyStop()<br/>→ 发布停止 Bspline"]
+  recover{"速度低于 0.1 m/s<br/>且 fail_safe=true？"}
+  gen["GEN_NEW_TRAJ<br/>重新尝试原目标"]
+  wait["WAIT_TARGET<br/>清除旧任务触发，等待新目标"]
+  timer -. "ROS 回调调度" .-> safe
+  safe -->|"检查到风险时"| replan
+  replan -. "恢复成功" .-> exec
+  replan -->|"所有尝试失败"| fail
+  fail -. "是" .-> emergency
+  fail -. "否" .-> rep
+  count -. "设置停车等待标志" .-> emergency
+  emergency -. "首次处理该状态时" .-> stop
+  stop -. "后续定时判断" .-> recover
+  recover -. "满足且 need_hover_stop_=false" .-> gen
+  recover -. "满足且 need_hover_stop_=true" .-> wait
+  recover -. "条件未满足，保持停止等待" .-> recover
+  classDef function fill:#e8f3ff,stroke:#3478b8,color:#17212b;
+  class safe,replan,count,stop function;
+  classDef state fill:#f0e9ff,stroke:#7754b3,color:#17212b;
+  class exec,rep,emergency,gen,wait state;
+  classDef input fill:#e9f8ed,stroke:#3a8251,color:#17212b;
+  class timer input;
+  classDef decision fill:#fff3d9,stroke:#aa7c2c,color:#17212b;
+  class fail,recover decision;

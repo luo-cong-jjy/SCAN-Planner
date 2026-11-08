@@ -1,3 +1,7 @@
+/// @file
+/// 感知渲染的视场候选块筛选组件，CPU 渲染器配置场景包围盒后调用 check_fov()。
+/// 先选择可能与视场相交的空间块，再由渲染逻辑做点级投影/遮挡处理；候选块不是最终观测点。
+/// axis 为方向，theta 为锥形视场角度阈值（rad），depth 为沿轴方向的距离限制。
 #include "FOV_Checker.h"
 
 FOV_Checker::FOV_Checker(){
@@ -10,14 +14,17 @@ FOV_Checker::~FOV_Checker(){
 
 }
 
+/// @brief 保存整体场景包围盒，用于限制候选块范围。
 void FOV_Checker::Set_Env(BoxPointType env_param){
     env = env_param;
 }
 
+/// @brief 设置空间候选立方块的边长，单位 m，须与场景哈希块尺度一致。
 void FOV_Checker::Set_BoxLength(double box_len_param){
     box_length = box_len_param;
 }
 
+/// @brief 按指定小数位对位置/方向分量舍入，沿用当前候选块筛选的数值处理。
 void round_v3d(Eigen::Vector3d &vec, int decimal){
     double tmp;
     int t;
@@ -29,6 +36,8 @@ void round_v3d(Eigen::Vector3d &vec, int decimal){
     return;
 }
 
+/// @brief 对位置和朝向做预处理，枚举可能位于视场内的空间块并写入 boxes。
+/// 内部会归一化 axis，调用方应提供非零方向；输出是候选集，不代表每个点都可见。
 void FOV_Checker::check_fov(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, double theta, double depth, vector<BoxPointType> &boxes){
     round_v3d(cur_pose,4);
     round_v3d(axis,3);
@@ -272,6 +281,7 @@ void FOV_Checker::check_fov(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, doub
     }
 }
 
+/// @brief 通过箱体与视场的几何关系判断是否保留该块，再细化检查面、边或顶点。
 bool FOV_Checker::check_box(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, double theta, double depth, const BoxPointType box){
     Eigen::Vector3d vertex[8];
     bool s;
@@ -329,6 +339,7 @@ bool FOV_Checker::check_box(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, doub
     return s;
 }
 
+/// @brief 检查块的一个面与视场的关系，复用边/点级几何判断。
 bool FOV_Checker::check_surface(Eigen::Vector3d cur_pose, Eigen::Vector3d axis,  double theta, double depth, PlaneType plane){
     Eigen::Vector3d plane_p, plane_u, plane_v, plane_w, pc, p, vec;
     bool s;
@@ -358,6 +369,7 @@ bool FOV_Checker::check_surface(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, 
     return s;
 }
 
+/// @brief 判断有限几何边与视场锥/深度范围的关系，供箱体面的筛选调用。
 bool FOV_Checker::check_line(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, double theta, double depth, Eigen::Vector3d line_p, Eigen::Vector3d line_vec){
     Eigen::Vector3d p, vec_1, vec_2;
     double xl, yl, zl, xn, yn, zn, dot_1, dot_2, ln, pn, pl, l2, p2;
@@ -443,6 +455,7 @@ bool FOV_Checker::check_line(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, dou
     return false;
 }
 
+/// @brief 用投影距离和与 axis 的夹角判断点，保留近端距离特判及现有角度裕量。
 bool FOV_Checker::check_point(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, double theta, double depth, Eigen::Vector3d point){
     Eigen::Vector3d vec;
     double proj_len;
@@ -464,6 +477,7 @@ bool FOV_Checker::check_point(Eigen::Vector3d cur_pose, Eigen::Vector3d axis, do
     return s;
 }
 
+/// @brief 检查箱体是否位于已配置场景边界内，eps_value 用于浮点边界容差。
 bool FOV_Checker::check_box_in_env(BoxPointType box){
     if (box.vertex_min[0] >= env.vertex_min[0]-eps_value && box.vertex_min[1] >= env.vertex_min[1]-eps_value && box.vertex_min[2] >= env.vertex_min[2]-eps_value && box.vertex_max[0]<= env.vertex_max[0]+eps_value && box.vertex_max[1]<= env.vertex_max[1]+eps_value && box.vertex_max[2]<= env.vertex_max[2]+eps_value){
         return true; 

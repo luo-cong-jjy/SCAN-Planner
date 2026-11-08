@@ -1,3 +1,6 @@
+/// @file
+/// 备用梯度下降接口，记录目标函数、梯度阈值和调用/迭代上限。
+/// 当前主优化器使用 L-BFGS；这里的接口保留供其他调用者使用，不能据编译关系推断其处于主链路。
 #ifndef _GRADIENT_DESCENT_OPT_H_
 #define _GRADIENT_DESCENT_OPT_H_
 

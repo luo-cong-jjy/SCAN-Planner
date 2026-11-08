@@ -1,3 +1,5 @@
+# 启动树对应的 catkin 构建入口：构建里程计可视化节点，输出历史路径、模型 Marker 和相关 TF。
+# 修改注释不改变目标；运行时通过 roslaunch 的 pkg/type 定位这里生成的程序。
 #cmake_minimum_required(VERSION 2.4.6)
 #include($ENV{ROS_ROOT}/core/rosbuild/rosbuild.cmake)
 
@@ -29,17 +31,21 @@
 #rosbuild_add_executable(example examples/example.cpp)
 #target_link_libraries(example ${PROJECT_NAME})
 
+# 生成命名的可执行文件，launch 的 type 必须对应此目标生成的程序。
 #rosbuild_add_executable(odom_visualization src/odom_visualization.cpp)
+# 为当前目标链接所需实现库；头文件可见不等于已经完成符号链接。
 #target_link_libraries(odom_visualization pose_utils)
 
 #----------------------------------
 cmake_minimum_required(VERSION 2.8.3)
+# 声明本构建项目名，与 package.xml 的包名及导出目标命名对应。
 project(odom_visualization)
 
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_FLAGS "-O3 -Wall -g")
 
 ## Find catkin macros and libraries
+# 查找编译/链接所需依赖；找到依赖不代表会启动依赖中的 ROS 节点。
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
@@ -78,6 +84,7 @@ find_package(catkin REQUIRED COMPONENTS
 ##   * add "message_generation" and every package in MSG_DEP_SET to
 ##     find_package(catkin REQUIRED COMPONENTS ...)
 ##   * add "message_runtime" and every package in MSG_DEP_SET to
+# 向下游包导出本包头文件、库和 catkin 依赖，供 find_package(catkin COMPONENTS ...) 使用。
 ##     catkin_package(CATKIN_DEPENDS ...)
 ##   * uncomment the add_*_files sections below as needed
 ##     and list every .msg/.srv/.action file to be processed
@@ -134,12 +141,16 @@ catkin_package(
 ###########
 ## Build ##
 ###########
+# 查找编译/链接所需依赖；找到依赖不代表会启动依赖中的 ROS 节点。
 find_package(Armadillo REQUIRED)
+# 设置编译头文件搜索路径；SYSTEM 路径按工具链规则处理依赖头的告警。
+# 设置编译头文件搜索路径；SYSTEM 路径按工具链规则处理依赖头的告警。
 include_directories(${ARMADILLO_INCLUDE_DIRS})
 
 
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
+# 设置编译头文件搜索路径；SYSTEM 路径按工具链规则处理依赖头的告警。
 include_directories(include)
 include_directories(
   ${catkin_INCLUDE_DIRS}

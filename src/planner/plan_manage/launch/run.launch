@@ -1,61 +1,131 @@
 <launch>
-  <!-- real or sim -->
+  <!--
+    ROS1 主启动入口：roslaunch scan_planner run.launch
+    arg 是 launch 内的变量，不会自动写入 ROS 参数服务器；param 才会写入参数服务器。
+    arg 的 default 提供可被启动命令覆盖的默认值，例如 sensor_type:=depth；
+    arg 的 value 则在当前作用域内指定取值。include 内的 arg 用于给下级文件传参。
+    $(arg 名称) 读取 launch 变量；$(find 包名) 查找 ROS 包路径；$(eval ...) 计算表达式。
+  -->
+
+  <!-- is_real_world：false 使用仿真话题；true 接入外部真机话题，并停用模拟地图、感知和运动学仿真。 -->
   <arg name="is_real_world" default="false"/>
 
-  <!-- navigation mode -->
-  <!-- 1: use 2D Nav Goal to select final goal  -->
-  <!-- 2: use keypoints to navigate in multi-floor scene -->
-  <!-- 3: use reference path to follow and avoid obstacles -->
+  <!--
+    navi_mode：目标输入方式。
+    1：在 RViz 用 2D Nav Goal 设置目标，订阅 /move_base_simple/goal。
+    2：从仓库 tools/keypoint.yaml 读取关键点，依次导航；需先准备该文件。
+    3：订阅外部系统发布的 /initial_path，沿参考路径进行局部规划。
+  -->
   <arg name="navi_mode" default="1"/>
+
+  <!-- sensor_type：lidar 使用点云；depth 使用深度图，影响感知节点和建图模块的输入选择。 -->
   <arg name="sensor_type" default="lidar"/>
 
-  <!-- body topic -->
+  <!-- body_pose_topic：机身里程计话题，类型为 nav_msgs/Odometry；按真机/仿真模式选择。 -->
   <arg name="body_pose_topic" value="$(eval '/LIO/odom_vehicle' if arg('is_real_world') else '/quad_0/body_pose')" />
+
+  <!-- 将选中的话题名写为 /body_pose_topic 字符串参数，供规划器、控制器、感知和显示节点读取。 -->
   <param name="body_pose_topic" value="$(arg body_pose_topic)" type="str"/>
 
-  <!-- main algorithm params -->
+  <!-- file：包含本包的规划参数文件；该文件设置参数、话题重映射，并启动 scan_planner_node。 -->
   <include file="$(find scan_planner)/launch/advanced_param.xml">
 
-    <!-- sensor choose -->
+    <!-- 传递所选传感器类型，供下级文件设置 grid_map/sensor_type。 -->
     <arg name="sensor_type" value="$(arg sensor_type)"/>
+
+    <!-- 传递机身位姿话题，用于重映射建图模块的 /grid_map/body_pose。 -->
     <arg name="body_pose_topic" value="$(arg body_pose_topic)" />
+
+    <!--
+      sensor_pose_topic：传感器位姿话题，类型为 nav_msgs/Odometry。
+      真机使用 LIO 的 IMU 位姿；仿真按传感器选择 camera_pose 或 lidar_pose。
+      建图模块使用它确定观测坐标变换和射线起点；与机身位姿的用途不同。
+    -->
     <arg name="sensor_pose_topic" value="$(eval '/LIO/odom_imu' if arg('is_real_world') else ('/quad_0/camera_pose' if arg('sensor_type') == 'depth' else '/quad_0/lidar_pose'))" />
-    
-    <!-- lidar topic -->
+
+    <!-- cloud_topic：激光点云输入，类型为 sensor_msgs/PointCloud2；仅在 lidar 分支使用。 -->
     <arg name="cloud_topic" value="$(eval '/LIO/clouds_lidar' if arg('is_real_world') else '/pcl_render_node/cloud')"/>
+
+    <!--
+      cloud_is_world：点云的 XYZ 是否已经位于世界坐标系。
+      仿真为 true，直接使用 XYZ；真机为 false，由建图模块按传感器位姿变换到世界系。
+      接入其他数据源时，应根据实际点云坐标系核对该取值。
+    -->
     <arg name="cloud_is_world" value="$(eval 'false' if arg('is_real_world') else 'true')"/>
-    
-    <!-- depth topic -->
+
+    <!-- depth_topic：深度图输入，类型为 sensor_msgs/Image；仅在 depth 分支使用。 -->
     <arg name="depth_topic" value="$(eval '/camera/aligned_depth_to_color/image_raw' if arg('is_real_world') else '/pcl_render_node/depth')"/>
+
+    <!--
+      以下为深度相机针孔模型内参，单位为像素；真机值应与实际深度图对应的标定一致。
+      反投影关系：X=(u-cx)*Z/fx，Y=(v-cy)*Z/fy；深度值到 Z 的换算另见 advanced_param.xml。
+      lidar 分支不使用这些内参进行深度反投影。
+    -->
+    <!-- cx：图像主点的水平坐标。 -->
     <arg name="cx" value="$(eval 317.19183349609375 if arg('is_real_world') else 321.04638671875)"/>
+
+    <!-- cy：图像主点的垂直坐标。 -->
     <arg name="cy" value="$(eval 256.4806823730469 if arg('is_real_world') else 243.44969177246094)"/>
+
+    <!-- fx：水平方向的焦距，以像素为单位。 -->
     <arg name="fx" value="$(eval 609.5884399414062 if arg('is_real_world') else 387.229248046875)"/>
+
+    <!-- fy：垂直方向的焦距，以像素为单位。 -->
     <arg name="fy" value="$(eval 609.22021484375 if arg('is_real_world') else 387.229248046875)"/>
 
+    <!-- 将真机/仿真选择传给下级文件，用于设置建图模块的 need_extrinsic 外参处理开关。 -->
     <arg name="is_real_world" value="$(arg is_real_world)"/>
+
+    <!-- 将导航模式写入下级规划器的 fsm/navi_mode 参数。 -->
     <arg name="navi_mode" value="$(arg navi_mode)" />
   </include>
 
-  <!-- controller mode -->
-  <!-- open_loop: publish trajectory-following odometry for multi-floor simulation -->
-  <!-- closed_loop: track the trajectory for 2D simulation or real-world control -->
+  <!--
+    controller_mode：轨迹执行方式。
+    closed_loop：结合实际位姿跟踪轨迹，发布 /cmd_vel；仿真时配合平面运动学积分。
+    open_loop：按轨迹直接采样三维位置/速度并发布里程计，适合多楼层轨迹的运动学演示。
+    open_loop 没有真实执行误差反馈，应与真机速度控制场景区分。
+  -->
   <arg name="controller_mode" default="closed_loop"/>
 
+  <!--
+    node 通用属性：pkg 是 ROS 包名，type 是包中的可执行文件名，name 是运行时节点名。
+    output="screen" 将节点终端输出显示在当前终端；if 条件成立才启动，unless 条件成立则不启动。
+    下方节点仅在选择 open_loop 时启动，源码为 plan_manage/src/open_loop_controller.cpp。
+  -->
   <node if="$(eval arg('controller_mode') == 'open_loop')" pkg="scan_planner" name="open_loop_controller" type="open_loop_controller" output="screen"/>
+
+  <!-- group：将相同条件应用于组内节点；此组仅在 closed_loop 模式启用。 -->
   <group if="$(eval arg('controller_mode') == 'closed_loop')">
+    <!-- 闭环轨迹控制器：订阅 B 样条和机身位姿，输出机身坐标系速度及轨迹进度冻结状态。 -->
     <node pkg="scan_planner" name="closed_loop_controller" type="closed_loop_controller" output="screen"/>
+
+    <!-- 仅仿真启动：接收 /cmd_vel 并积分 x、y、yaw，发布机身里程计；真机位姿由外部系统提供。 -->
     <node unless="$(arg is_real_world)" pkg="scan_planner" name="go2_kinematic_sim" type="go2_kinematic_sim" output="screen"/>
   </group>
 
-  <!-- go2 model -->
+  <!-- robot_description：textfile 将 URDF 文件全文读为字符串参数，供模型显示和关节 TF 发布使用。 -->
   <param name="robot_description" textfile="$(find go2_description)/urdf/go2_description.urdf" />
+
+  <!-- 系统节点：读取 URDF 和 /joint_states，发布机器人各链接之间的 TF；name 为本次节点命名。 -->
   <node pkg="robot_state_publisher" type="robot_state_publisher" name="go2_robot_state_publisher" output="screen"/>
+
+  <!-- 显示用步态节点：根据机身运动生成 /joint_states，驱动 RViz 腿部动画，不是实机电机控制器。 -->
   <node pkg="scan_planner" name="go2_gait_publisher" type="go2_gait_publisher" output="screen"/>
 
-  <!-- use simulator -->
+  <!--
+    包含仿真与里程计可视化配置；具体节点由 simulator.xml 内的条件控制。
+    默认仿真生成随机点云地图并启动 CPU 感知；真机模式会停用模拟地图和感知。
+    odom_visualization 在两种模式下均启动，用于历史路径、显示 Marker 和相关 TF。
+  -->
   <include file="$(find scan_planner)/launch/simulator.xml">
+    <!-- 真机/仿真开关：控制是否设置仿真初始位置、启动模拟地图和感知。 -->
     <arg name="is_real_world" value="$(arg is_real_world)" />
+
+    <!-- 导航模式：下级文件据此选择仿真初始位置，mode 1 与其他模式的默认位置不同。 -->
     <arg name="navi_mode" value="$(arg navi_mode)" />
+
+    <!-- 传感器类型：决定模拟感知输出激光点云，还是深度图及对应传感器位姿。 -->
     <arg name="sensor_type" value="$(arg sensor_type)" />
   </include>
 

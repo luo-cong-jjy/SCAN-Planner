@@ -1,3 +1,7 @@
+/// @file
+/// 项目携带的 L-BFGS 求解组件，供 BsplineOptimizer 传入代价/解析梯度及提前退出回调。
+/// 求解器只处理变量数组和目标函数，不认识机器人几何、ROS 话题或占用地图；安全检查由调用方完成。
+/// 保留组件原有参数说明、返回码和实现，本次只补充与规划链路的接入说明。
 #ifndef LBFGS_HPP
 #define LBFGS_HPP
 
@@ -84,6 +88,7 @@ namespace lbfgs
      *  Call lbfgs_load_default_parameters() function to initialize parameters to the
      *  default values.
      */
+    /// @brief 有限内存历史长度、梯度收敛阈值、线搜索和迭代上限等配置；由优化器初始化后按需覆盖。
     struct lbfgs_parameter_t
     {
         /**
@@ -775,6 +780,7 @@ namespace lbfgs
         for (;;)
         {
             /* Report the progress. */
+            /// @brief 线搜索内可调用进度/提前停止接口；规划器用 earlyExit() 根据新碰撞标志要求中断。
             if (cd->proc_progress)
             {
                 double xnorm;
@@ -961,6 +967,7 @@ namespace lbfgs
      *
      *  @param  param       The pointer to the parameter structure.
      */
+    /// @brief 将组件默认配置写入调用方参数对象；规划器可随后设置迭代上限等值。
     inline void lbfgs_load_default_parameters(lbfgs_parameter_t *param)
     {
         memcpy(param, &_default_param, sizeof(*param));
@@ -1021,6 +1028,8 @@ namespace lbfgs
      *                      minimization process terminates without an error. A
      *                      non-zero value indicates an error.
      */
+    /// @brief 就地更新长度 n 的变量数组 x，代价/梯度通过 proc_evaluate 回调获取。
+    /// 保存有限组位置/梯度差以近似逆 Hessian，结合线搜索推进；返回码不替代轨迹碰撞检查。
     inline int lbfgs_optimize(int n,
                               double *x,
                               double *ptr_fx,

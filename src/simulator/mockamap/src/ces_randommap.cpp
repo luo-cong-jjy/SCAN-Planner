@@ -1,3 +1,6 @@
+/// @file
+/// 随 mockamap 的 src/*.cpp 一起编译的历史随机场景辅助实现。
+/// 默认节点入口仍是 mockamap.cpp，默认 type=2 的实际路径见 maps.cpp 的 randomMapGenerate()。
 #include <iostream>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>

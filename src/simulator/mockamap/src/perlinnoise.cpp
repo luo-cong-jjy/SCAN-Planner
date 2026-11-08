@@ -1,3 +1,6 @@
+/// @file
+/// Perlin 噪声实现，被地图生成的噪声场景分支调用；不是独立 ROS 节点。
+/// 固定种子构造置换表以控制几何重复性，函数输出仍需由 Maps 根据阈值解释为障碍。
 #include "perlinnoise.hpp"
 
 #include <algorithm>
@@ -59,6 +62,7 @@ PerlinNoise::PerlinNoise(unsigned int seed)
   p.insert(p.end(), p.begin(), p.end());
 }
 
+/// @brief 对空间坐标定位晶格，计算角点梯度并平滑插值为噪声标量。
 double
 PerlinNoise::noise(double x, double y, double z)
 {
@@ -101,18 +105,21 @@ PerlinNoise::noise(double x, double y, double z)
   return (res + 1.0) / 2.0;
 }
 
+/// @brief 使用平滑过渡多项式，使晶格单元边界的插值更连续。
 double
 PerlinNoise::fade(double t)
 {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
+/// @brief 按 t 在线性端点值间插值，供多轴噪声混合使用。
 double
 PerlinNoise::lerp(double t, double a, double b)
 {
   return a + t * (b - a);
 }
 
+/// @brief 根据哈希选择梯度方向，并与局部偏移计算贡献。
 double
 PerlinNoise::grad(int hash, double x, double y, double z)
 {

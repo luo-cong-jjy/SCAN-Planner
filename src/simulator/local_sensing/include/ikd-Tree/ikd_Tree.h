@@ -1,3 +1,6 @@
+/// @file
+/// 增量 KD-tree 及其几何/操作类型声明，被感知组件和 FOV_Checker 共同包含。
+/// PointType 为 XYZI；BoxPointType 为轴对齐包围盒。原有线程和节点存储约定保持不变。
 #pragma once
 #include <pcl/point_types.h>
 #include <Eigen/StdVector>
@@ -23,6 +26,7 @@ typedef vector<PointType, Eigen::aligned_allocator<PointType>>  PointVector;
 
 const PointType ZeroP;
 
+/// @brief 树节点包含位置、切分轴、逻辑删除和范围统计，以及用于延迟标记传播的锁。
 struct KD_TREE_NODE
 {
     PointType point;
@@ -60,6 +64,7 @@ struct PointType_CMP{
     }    
 };
 
+/// @brief 每轴 vertex_min/vertex_max 定义空间范围；长度单位与输入点坐标一致。
 struct BoxPointType{
     float vertex_min[3];
     float vertex_max[3];
@@ -69,6 +74,7 @@ enum operation_set {ADD_POINT, DELETE_POINT, DELETE_BOX, ADD_BOX, DOWNSAMPLE_DEL
 
 enum delete_point_storage_set {NOT_RECORD, DELETE_POINTS_REC, MULTI_THREAD_REC};
 
+/// @brief 记录重建期间的增删命令，供新子树构建后追平状态。
 struct Operation_Logger_Type{
     PointType point;
     BoxPointType boxpoint;

@@ -1,3 +1,6 @@
+/// @file
+/// Armadillo 位姿工具声明，主要为 odom_visualization 提供旋转和四元数转换。
+/// 角度单位 rad，三维位姿采用位置加 yaw/pitch/roll，四元数向量按 [w,x,y,z] 排列。
 #ifndef POSE_UTILS_H
 #define POSE_UTILS_H
 

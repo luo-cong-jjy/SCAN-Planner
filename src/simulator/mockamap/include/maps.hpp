@@ -1,3 +1,6 @@
+/// @file
+/// 场景生成器接口及迷宫辅助点数据，BasicInfo 中的输出指针由主节点提供并保持有效。
+/// sizeX/Y/Z 是经 scale 转换后的离散尺寸；生成器将点写回共享 cloud/output。
 #ifndef MAPS_HPP
 #define MAPS_HPP
 

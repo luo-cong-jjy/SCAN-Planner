@@ -1,16 +1,23 @@
+/// @file
+/// 体素射线遍历工具：沿线段逐次跨过最近的 X/Y/Z 网格面，列出经过的体素。
+/// 输入采用体素尺度坐标，GridMap 负责米制坐标与分辨率换算；这里不维护占用概率。
+/// 保留原算法说明和参考资料；RayCaster 为当前地图融合所用的增量接口。
 #include <Eigen/Eigen>
 #include <cmath>
 #include <iostream>
 #include <plan_env/raycast.h>
 
+/// @brief 返回整数方向符号 -1/0/1，供各轴索引的递增方向选择。
 int signum(int x) {
   return x == 0 ? 0 : x < 0 ? -1 : 1;
 }
 
+/// @brief 取得非负模结果，避免负体素坐标的小数部分处理与正坐标不一致。
 double mod(double value, double modulus) {
   return fmod(fmod(value, modulus) + modulus, modulus);
 }
 
+/// @brief 计算从坐标 s 沿 ds 方向到下一个整数网格面的参数距离，用于初始化 tMax。
 double intbound(double s, double ds) {
   // Find the smallest positive t such that s+t*ds is an integer.
   if (ds < 0) {
@@ -22,6 +29,7 @@ double intbound(double s, double ds) {
   }
 }
 
+/// @brief 批量射线接口之一，写入调用方提供的数组并更新点数；容量由调用方保证。
 void Raycast(const Eigen::Vector3d& start, const Eigen::Vector3d& end, const Eigen::Vector3d& min,
              const Eigen::Vector3d& max, int& output_points_cnt, Eigen::Vector3d* output) {
   //    std::cout << start << ' ' << end << std::endl;
@@ -125,6 +133,7 @@ void Raycast(const Eigen::Vector3d& start, const Eigen::Vector3d& end, const Eig
   }
 }
 
+/// @brief 批量射线的 vector 输出版本；按给定边界筛选经过体素。
 void Raycast(const Eigen::Vector3d& start, const Eigen::Vector3d& end, const Eigen::Vector3d& min,
              const Eigen::Vector3d& max, std::vector<Eigen::Vector3d>* output) {
   //    std::cout << start << ' ' << end << std::endl;
@@ -225,6 +234,7 @@ void Raycast(const Eigen::Vector3d& start, const Eigen::Vector3d& end, const Eig
   }
 }
 
+/// @brief 缓存端点所在体素、各轴步进方向、首次跨面时间和时间增量；同体素退化线段返回 false。
 bool RayCaster::setInput(const Eigen::Vector3d& start,
                          const Eigen::Vector3d& end /* , const Eigen::Vector3d& min,
                          const Eigen::Vector3d& max */) {
@@ -274,6 +284,7 @@ bool RayCaster::setInput(const Eigen::Vector3d& start,
     return true;
 }
 
+/// @brief 输出当前体素后沿最先相交的网格面推进；到达终点体素时返回 false，由调用方处理端点证据。
 bool RayCaster::step(Eigen::Vector3d& ray_pt) {
   // if (x_ >= min_.x() && x_ < max_.x() && y_ >= min_.y() && y_ < max_.y() &&
   // z_ >= min_.z() && z_ <

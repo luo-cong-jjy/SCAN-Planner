@@ -1,3 +1,6 @@
+/// @file
+/// 控制点优化器的内部状态与目标函数接口，实现见 bspline_optimizer.cpp。
+/// 控制点按列排列；每点可关联多个避障基点/方向，求解变量仅覆盖非固定边界段。
 #ifndef _BSPLINE_OPTIMIZER_H_
 #define _BSPLINE_OPTIMIZER_H_
 
@@ -8,22 +11,26 @@
 #include <ros/ros.h>
 #include "bspline_opt/lbfgs.hpp"
 
-// Gradient and elastic band optimization
-
-// Input: a signed distance field and a sequence of points
-// Output: the optimized sequence of points
-// The format of points: N x 3 matrix, each row is a point
+// 当前优化输入：局部占用查询、3×N 控制点、时间间隔，以及由碰撞段构造的避障方向。
+// 输出：优化后的控制点；本路径不以完整 ESDF 作为输入。
 namespace scan_planner
 {
 
+  // 单轮优化的控制点和避障引导存储；由 initControlPoints() 建立，目标函数迭代读取/更新。
   class ControlPoints
   {
   public:
+    // 期望避障投影间距，initControlPoints() 首次从 dist0_ 复制，默认 0.2 m。
     double clearance;
+    // 控制点数量 N，resize(size_set) 更新；非固定首尾区域的点才作为求解变量。
     int size;
+    // 待优化控制点，形状为 3×N，列依次对应世界 XYZ 点（m）；求解器每轮将变量写回这里。
     Eigen::MatrixXd points;
+    // 第 i 项保存该控制点关联的各个避障基点（世界系 m），由碰撞段及 A* 引导构造。
     std::vector<std::vector<Eigen::Vector3d>> base_point; // The point at the start of the direction vector (collision point)
+    // 与 base_point 一一对应的单位避障方向，用来计算控制点相对基点的投影间距。
     std::vector<std::vector<Eigen::Vector3d>> direction;  // Direction vector, must be normalized.
+    // 当前碰撞段构造时的临时标志；每次使用前由相关算法重置，不表示持久的占用状态。
     std::vector<bool> flag_temp;                          // A flag that used in many places. Initialize it every time before using it.
     // std::vector<bool> occupancy;
 
@@ -44,6 +51,7 @@ namespace scan_planner
     }
   };
 
+  /// @brief 将地图查询、A* 绕行和 L-BFGS 目标函数组织为 Rebound/Refine 两阶段优化。
   class BsplineOptimizer
   {
 
@@ -74,7 +82,9 @@ namespace scan_planner
 
     Eigen::MatrixXd getControlPoints();
 
+    // 碰撞段绕行搜索入口，Manager 初始化时建立 100³ 节点池；成功路径用于生成避障方向。
     AStar::Ptr a_star_;
+    // Refine 的位置参考点，Manager::refineTrajAlgo() 对时间调整后的轨迹采样得到，单位 m。
     std::vector<Eigen::Vector3d> ref_pts_;
 
     std::vector<std::vector<Eigen::Vector3d>> initControlPoints(Eigen::MatrixXd &init_points, bool flag_first_init = true);
@@ -84,45 +94,74 @@ namespace scan_planner
     inline int getOrder(void) { return order_; }
 
   private:
+    // Manager 注入的共享局部地图，供碰撞段识别、引导构造和优化结果碰撞采样。
     GridMap::Ptr grid_map_;
 
+    // 本次求解的停止原因，由距离代价/碰撞引导更新逻辑写入，earlyExit() 读取。
     enum FORCE_STOP_OPTIMIZE_TYPE
     {
+      // 0：继续当前求解。
       DONT_STOP,
+      // 1：检测到新的有效碰撞引导，要求结束当前求解并重启。
       STOP_FOR_REBOUND,
+      // 2：碰撞段无法继续处理等错误，要求结束当前求解。
       STOP_FOR_ERROR
     } force_stop_type_;
 
     // main input
     // Eigen::MatrixXd control_points_;     // B-spline control points, N x dim
+    // 本轮样条时间间隔（s），由管理器传入；用于控制点差分导数、样条重建和碰撞采样。
     double bspline_interval_; // B-spline knot span
+    // 历史终点缓存，当前 Rebound/Refine 实现未读取；有效终点约束来自控制点与管理器输入。
     Eigen::Vector3d end_pt_;  // end of the trajectory
     // int             dim_;                // dimension of the B-spline
     //
+    // 历史几何引导点接口；当前 Rebound/Refine 不读取，实际绕行引导存入 cps_.base_point/direction。
     vector<Eigen::Vector3d> guide_pts_; // geometric guiding path points, N-6
+    // 历史指定途经点接口，当前主优化路径未读取。
     vector<Eigen::Vector3d> waypoints_; // waypts constraints
+    // 与历史 waypoints_ 配套的控制点索引，当前主优化路径未读取。
     vector<int> waypt_idx_;             // waypts constraints index
                                         //
+    // 历史停止条件接口，当前主路径使用 rebound/refine 中设置的 L-BFGS 配置，不读取这两个字段。
     int max_num_id_, max_time_id_;      // stopping criteria
+    // 历史代价选择字段，当前两个阶段直接调用各自 combineCost*()，不读取此选择值。
     int cost_function_;                 // used to determine objective function
-    double start_time_;                 // global time for moving obstacles
+    // 历史动态障碍时间字段，当前路径未维护或读取；不能据此认为优化器在预测障碍运动。
+    double start_time_;                 // 保留字段，当前未用于动态障碍预测
 
     /* optimization parameters */
+    // optimization/order，缺省 3；用于固定首尾控制点及界定求解变量区域，当前轨迹为三次样条。
     int order_;                    // bspline degree
+    /// @brief 平滑项权重；lambda2_/new_lambda2_ 为初始/本轮避障权重，lambda3_ 可行性，lambda4_ 贴合参考。
+    // optimization/lambda_smooth，默认 1.0；两个阶段都用于控制点平滑代价。
     double lambda1_;               // jerk smoothness weight
+    // lambda2_：optimization/lambda_collision 默认 1.0；new_lambda2_ 是本轮实际避障权重。
+    // Rebound 开始复制初始值，碰撞检查未通过而重启时可加倍。
     double lambda2_, new_lambda2_; // distance weight
+    // optimization/lambda_feasibility，默认 0.1；惩罚差分速度、加速度超限。
     double lambda3_;               // feasibility weight
+    // optimization/lambda_fitness，默认 1.0；仅 Refine 用来贴合 ref_pts_，不是 Rebound 的代价项。
     double lambda4_;               // curve fitting
+    // 保留字段，当前主路径未使用；cpp 中分段代价的局部变量 a 与此成员不是同一个量。
     int a;
     //
+    // optimization/dist0，默认 0.2 m；用于设置 cps_.clearance，衡量沿避障方向的投影间距。
     double dist0_;             // safe distance
+    // optimization/max_vel、max_acc，默认 0.75 m/s、0.5 m/s²；作为软可行性惩罚阈值。
     double max_vel_, max_acc_; // dynamic limits
 
+    // 3×(N-2×order_) 个标量变量；按中间控制点 XYZ 展开，首尾各 order_ 点固定。z 梯度另置零。
     int variable_num_;              // optimization variables
+    // 每次求解重置为 0，在 costFunction*() 中随代价求值递增；是求值计数，不等于 FSM 重试次数。
     int iter_num_;                  // iteration of the solver
+    // 历史最优变量缓存，当前主路径未写入/读取；结果直接保存在 cps_.points。
     Eigen::VectorXd best_variable_; //
+    // 当前 Rebound 重启时置为最大 double，后续未用于筛选结果；不要将它视为有效最终最小代价。
     double min_cost_;               //
 
+    /// @brief 待优化控制点及其局部碰撞引导；投影距离应与普通欧氏障碍距离区分。
+    // 当前控制点和避障引导的工作区，由初值构造、代价计算及重启逻辑共用；字段语义见上方定义。
     ControlPoints cps_;
 
     /* cost function */

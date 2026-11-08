@@ -1,86 +1,250 @@
 <launch>
+  <!--
+    启动文件树中的仿真/可视化配置，由 run.launch 包含。
+    地图与感知节点仅在非真机模式启动；odom_visualization 在两种模式下都启动。
+    arg 是 launch 变量，param 才写入参数服务器；下列 use_gpu/use_pcd_map 等内部 arg 当前未由父文件透传。
+  -->
+  <!--
+    父文件传入的真机开关；true 时禁用模拟地图、模拟感知和仿真初始位置参数。
+  -->
   <arg name="is_real_world"/>
+  <!--
+    父文件传入的导航模式，用于选择不同仿真初始位置；不在此文件订阅目标。
+  -->
   <arg name="navi_mode"/>
+  <!--
+    父文件传入 lidar/depth，决定感知节点输出点云或深度图和配套位姿。
+  -->
   <arg name="sensor_type"/>
 
   <!-- initial state -->
+  <!--
+    机身初始世界 x，单位 m；mode 1 为 -19，其他模式为 -5.5，实际写入仅发生在仿真模式。
+  -->
   <arg name="init_x" default="$(eval -19.0 if arg('navi_mode') == 1 else -5.5)"/>
+  <!--
+    机身初始世界 y，单位 m；mode 1 为 1，其他模式为 5.5。
+  -->
   <arg name="init_y" default="$(eval 1.0 if arg('navi_mode') == 1 else 5.5)"/>
+  <!--
+    机身初始世界 z，单位 m；mode 1 为 0.25，其他模式为 0.5；平面运动学仿真保持该高度。
+  -->
   <arg name="init_z" default="$(eval 0.25 if arg('navi_mode') == 1 else 0.5)"/>
+  <!--
+    全局 /init_x，供开环轨迹采样或平面运动学仿真读取；unless=true 时不写入。
+  -->
   <param unless="$(arg is_real_world)" name="init_x" value="$(arg init_x)" type="double"/>
+  <!--
+    全局 /init_y，机身初始 y，单位 m。
+  -->
   <param unless="$(arg is_real_world)" name="init_y" value="$(arg init_y)" type="double"/>
+  <!--
+    全局 /init_z，机身初始 z，单位 m；不由 robot_description 自动推导。
+  -->
   <param unless="$(arg is_real_world)" name="init_z" value="$(arg init_z)" type="double"/>
 
   <!-- sim map size -->
+  <!--
+    仿真全局场景 x 方向尺寸，单位 m；与规划器滑动局部地图尺寸是不同配置。
+  -->
   <arg name="map_size_x" default="40.0"/>
+  <!--
+    仿真全局场景 y 方向尺寸，单位 m。
+  -->
   <arg name="map_size_y" default="40.0"/>
+  <!--
+    仿真全局场景 z 方向尺寸，单位 m。
+  -->
   <arg name="map_size_z" default="5.0"/>
 
   <!-- PCD map source -->
+  <!--
+    false 生成随机场景，true 使用 PCD 文件发布场景；两个地图发布节点互斥。
+  -->
   <arg name="use_pcd_map" default="false"/>
+  <!--
+    PCD 文件路径，需自行准备有效文件；默认随机地图不会读取它。
+  -->
   <arg name="pcd_map_file" default="$(find map_generator)/resource/building.pcd"/>
+  <!--
+    PCD 输出消息的参考坐标系名称；设置名称本身不会变换点坐标。
+  -->
   <arg name="pcd_frame_id" default="world"/>
+  <!--
+    PCD 场景重复发布频率，单位 Hz；0.2 表示约每 5 s 发布一次静态场景。
+  -->
   <arg name="pcd_publish_rate" default="0.2"/>
+  <!--
+    PCD 发布前的体素降采样边长，单位 m；不等于规划器的 grid_map/resolution。
+  -->
   <arg name="downsample_resolution" default="0.1"/>
 
   <!-- local sensing -->
+  <!--
+    感知后端选择：false=CPU，true=OpenGL；GPU 可执行文件还需编译时 USE_GPU=ON。
+  -->
   <arg name="use_gpu" default="false"/>
 
+  <!--
+    仅仿真且 use_pcd_map=true 启动：map_pub 读取 PCD，args 将文件路径传为程序参数。
+  -->
   <node if="$(eval (not arg('is_real_world')) and arg('use_pcd_map'))" pkg="map_generator" type="map_pub" name="map_pub" output="screen" args="$(arg pcd_map_file)">
+      <!--
+        PCD 点云的参考坐标系名称，应与实际坐标和规划器期望一致。
+      -->
       <param name="frame_id" value="$(arg pcd_frame_id)"/>
+      <!--
+        PCD 静态地图重复发布频率，单位 Hz。
+      -->
       <param name="publish_rate" value="$(arg pcd_publish_rate)"/>
+      <!--
+        PCD 地图统一输出话题，供感知渲染器和 RViz 使用。
+      -->
       <param name="cloud_topic" value="/map_generator/global_cloud"/>
+      <!--
+        map_pub 的降采样长度尺度，单位 m；由上面的 downsample_resolution 传入。
+      -->
       <param name="downsample_res" value="$(arg downsample_resolution)"/>
   </node>
 
+  <!--
+    仅仿真且 use_pcd_map=false 启动：构造并发布场景点云，源码入口 mockamap.cpp。
+  -->
   <node if="$(eval (not arg('is_real_world')) and (not arg('use_pcd_map')))" pkg="mockamap" type="mockamap_node" name="mockamap_node" output="screen">  
+      <!--
+        将随机地图原输出重映射为统一全局场景话题，地图生成器不需要知道下游使用者。
+      -->
       <remap from="/mock_map" to="/map_generator/global_cloud"/>
 
+      <!--
+        固定随机种子，配合同一生成算法和配置使场景便于重复比较。
+      -->
       <param name="seed" type="int" value="127"/>
+      <!--
+        随机地图的重复发布频率，单位 Hz；场景在进入循环前生成一次，不是每轮重随机。
+      -->
       <param name="update_freq" type="double" value="0.5"/>
 
       <!-- box edge length, unit meter-->
+      <!--
+        地图生成的基础离散长度，单位 m；生成器内部换算为 scale=1/resolution。
+      -->
       <param name="resolution" type="double" value="0.1"/>
 
       <!-- map size unit meter-->
+      <!--
+        随机场景 x 向尺寸，单位 m，由生成器再转换为离散尺寸。
+      -->
       <param name="x_length" value="$(arg map_size_x)"/>
+      <!--
+        随机场景 y 向尺寸，单位 m。
+      -->
       <param name="y_length" value="$(arg map_size_y)"/>
+      <!--
+        随机场景 z 向尺寸，单位 m；具体障碍高度还由对应场景分支决定。
+      -->
       <param name="z_length" value="$(arg map_size_z)"/>
 
+      <!--
+        场景类型：1=Perlin 噪声，2=随机箱体，3=二维迷宫，4=三维迷宫；默认执行 type 2。
+      -->
       <param name="type" type="int" value="2"/>
 
       <!-- 1 perlin noise parameters -->
+      <!--
+        仅 Perlin 分支使用的空间噪声变化尺度；默认 type 2 不使用它。
+      -->
       <param name="complexity"    type="double" value="0.05"/>
+      <!--
+        Perlin 分支选择噪声分位阈值的填充比例，默认 type 2 不使用它。
+      -->
       <param name="fill"          type="double" value="0.12"/>
+      <!--
+        Perlin 分支叠加的噪声层数，正整数；默认 type 2 不使用它。
+      -->
       <param name="fractal"       type="int"    value="1"/>
+      <!--
+        Perlin 分支各层幅度的缩放系数，具体按 attenuation/层序号计算。
+      -->
       <param name="attenuation"   type="double" value="0.1"/>
 
       <!-- 2 post2d random box map parameters -->
+      <!--
+        随机箱体底面宽度的抽样下限，单位 m。
+      -->
       <param name="width_min"       type="double" value="0.2"/>
+      <!--
+        随机箱体底面宽度的抽样上限，单位 m；抽样中心和宽度共同决定表面位置。
+      -->
       <param name="width_max"       type="double" value="0.8"/>
+      <!--
+        随机箱体高度抽样下限，单位 m；当前与上限同为 2，生成等高箱体。
+      -->
       <param name="height_min"      type="double" value="2.0"/>
+      <!--
+        随机箱体高度抽样上限，单位 m；生成器还按地图高度限制有效范围。
+      -->
       <param name="height_max"      type="double" value="2.0"/>
+      <!--
+        随机箱体抽样数量，不等于点云点数；箱体相交时最终独立可见障碍数也可能不同。
+      -->
       <param name="obstacle_number" type="int"    value="500"/>
+      <!--
+        箱体表面采样间距的目标尺度，单位 m；越小通常生成越多场景点。
+      -->
       <param name="surface_resolution" type="double" value="0.05"/>
 
   </node>
 
+  <!--
+    始终启动里程计显示节点：发布历史路径、Marker 和 world→base 等 TF；不执行运动积分。
+  -->
   <node pkg="odom_visualization" name="odom_visualization" type="odom_visualization" output="screen"/>
 
+  <!--
+    namespace 为组内相对参数增加 /pcl_render_node 前缀，使感知节点以私有句柄读取。
+  -->
   <group ns="pcl_render_node">
+        <!--
+          写入 /pcl_render_node/sensor_type，匹配同名感知节点的私有句柄。
+        -->
         <param name="sensor_type" value="$(arg sensor_type)" />
 
+        <!--
+          感知节点的场景 x 尺寸参数，单位 m，不是 GridMap 的局部窗口大小。
+        -->
         <param name="map/x_size"     value="$(arg map_size_x)"/>
+        <!--
+          感知节点的场景 y 尺寸参数，单位 m。
+        -->
         <param name="map/y_size"     value="$(arg map_size_y)"/>
+        <!--
+          感知节点的场景 z 尺寸参数，单位 m。
+        -->
         <param name="map/z_size"     value="$(arg map_size_z)"/>
   </group>
 
+  <!--
+    仅仿真且 use_gpu=true 启动：运行 OpenGL 后端，节点名沿用 pcl_render_node 以匹配下游接口。
+  -->
   <node if="$(eval (not arg('is_real_world')) and arg('use_gpu'))" pkg="local_sensing_node" type="opengl_render_node" name="pcl_render_node" output="screen" args="$(arg pcd_map_file)">
+        <!--
+          GPU 分支：随机地图时从话题接收场景，PCD 模式下按程序参数加载文件。
+        -->
         <param name="use_global_map_topic" value="$(eval not arg('use_pcd_map'))" />
+        <!--
+          将感知节点私有 global_map 接口重映射到统一全局场景点云；CPU/GPU 分支使用相同接口。
+        -->
         <remap from="~global_map" to="/map_generator/global_cloud"/>
   </node>
 
+  <!--
+    仅仿真且 use_gpu=false 启动：运行 CPU 感知后端，根据机身位姿从全局场景合成局部观测。
+  -->
   <node if="$(eval (not arg('is_real_world')) and (not arg('use_gpu')))" pkg="local_sensing_node" type="pcl_render_node" name="pcl_render_node" output="screen">
+        <!--
+          将感知节点私有 global_map 接口重映射到统一全局场景点云；CPU/GPU 分支使用相同接口。
+        -->
         <remap from="~global_map" to="/map_generator/global_cloud"/>
   </node>
 

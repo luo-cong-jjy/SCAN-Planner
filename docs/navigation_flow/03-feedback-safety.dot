@@ -1,0 +1,29 @@
+digraph Navigation {
+graph [rankdir=TB, bgcolor="white", pad=0.25, nodesep=0.35, ranksep=0.6, fontname="Noto Sans CJK SC", label="三种模式共用：安全检查和急停恢复", labelloc=t, fontsize=20];
+node [shape=box, style="rounded,filled", fontname="Noto Sans CJK SC", fontsize=12, margin="0.14,0.1"];
+edge [fontname="Noto Sans CJK SC", fontsize=10, color="#667085", arrowsize=0.7];
+timer [label="安全定时器\n目标周期 0.05 s", shape=box, fillcolor="#e9f8ed", color="#3a8251"];
+safe [label="checkCollisionCallback()\n先 updateLocalTrajTimeFreeze()\n再采样轨迹并查询膨胀占用", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+replan [label="发现碰撞风险\nplanFromCurrentTraj() 尝试恢复", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+exec [label="恢复成功 → EXEC_TRAJ", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+fail [label="恢复失败\n距碰撞不足 emergency_time_？", shape=diamond, fillcolor="#fff3d9", color="#aa7c2c"];
+rep [label="否 → REPLAN_TRAJ\n由执行回调继续尝试", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+count [label="finishProcess()\n常规规划失败达到次数上限", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+emergency [label="EMERGENCY_STOP", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+stop [label="执行回调进入停止状态后\ncallEmergencyStop(odom_pos_)\n→ Manager::EmergencyStop()\n→ 发布停止 Bspline", shape=box, fillcolor="#e8f3ff", color="#3478b8"];
+recover [label="速度低于 0.1 m/s\n且 fail_safe=true？", shape=diamond, fillcolor="#fff3d9", color="#aa7c2c"];
+gen [label="GEN_NEW_TRAJ\n重新尝试原目标", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+wait [label="WAIT_TARGET\n清除旧任务触发，等待新目标", shape=box, fillcolor="#f0e9ff", color="#7754b3"];
+timer -> safe [label="ROS 回调调度", style=dashed];
+safe -> replan [label="检查到风险时", style=solid];
+replan -> exec [label="恢复成功", style=dashed];
+replan -> fail [label="所有尝试失败", style=solid];
+fail -> emergency [label="是", style=dashed];
+fail -> rep [label="否", style=dashed];
+count -> emergency [label="设置停车等待标志", style=dashed];
+emergency -> stop [label="首次处理该状态时", style=dashed];
+stop -> recover [label="后续定时判断", style=dashed];
+recover -> gen [label="满足且 need_hover_stop_=false", style=dashed];
+recover -> wait [label="满足且 need_hover_stop_=true", style=dashed];
+recover -> recover [label="条件未满足，保持停止等待", style=dashed];
+}

@@ -1,4 +1,8 @@
 <?xml version="1.0"?>
+<!--
+  ROS 包清单：name 决定 rospack/roslaunch 的包标识，依赖声明用于构建、运行和部署解析。
+  节点和库的具体生成关系由同目录 CMakeLists.txt 定义；清单本身不启动进程。
+-->
 <package format="2">
   <name>map_generator</name>
   <version>0.0.0</version>

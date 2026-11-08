@@ -1,3 +1,7 @@
+/// @file
+/// 随感知组件编译的增量 KD-tree 实现，保留原有节点、锁和后台重建机制。
+/// 包括近邻/范围查询、逻辑删除、增量插入与不平衡重建；其是否处于运行热路径需检查实例调用。
+/// 本次仅解释组件边界，不改变数据结构、不修复原有告警，也不调整线程和锁的生命周期。
 #include "ikd_Tree.h"
 
 /*
@@ -36,12 +40,14 @@ void KD_TREE::set_downsample_param(float downsample_param){
     downsample_size = downsample_param;
 }
 
+/// @brief 保存删除比例、平衡阈值和降采样长度配置。
 void KD_TREE::InitializeKDTree(float delete_param, float balance_param, float box_length){
     Set_delete_criterion_param(delete_param);
     Set_balance_criterion_param(balance_param);
     set_downsample_param(box_length);
 }
 
+/// @brief 初始化节点统计、范围、删除标志、父子指针和节点锁。
 void KD_TREE::InitTreeNode(KD_TREE_NODE * root){
     root->point.x = 0.0f;
     root->point.y = 0.0f;
@@ -155,6 +161,7 @@ void KD_TREE::root_alpha(float &alpha_bal, float &alpha_del){
     }    
 }
 
+/// @brief 建立后台重建线程及相关同步对象；实例生命周期须与 stop_thread() 配套。
 void KD_TREE::start_thread(){
     pthread_mutex_init(&termination_flag_mutex_lock, NULL);   
     pthread_mutex_init(&rebuild_ptr_mutex_lock, NULL);     
@@ -166,6 +173,7 @@ void KD_TREE::start_thread(){
     printf("Multi thread started \n");    
 }
 
+/// @brief 发出终止状态并等待后台线程结束，供树销毁时回收同步资源。
 void KD_TREE::stop_thread(){
     pthread_mutex_lock(&termination_flag_mutex_lock);
     termination_flag = true;
@@ -184,6 +192,8 @@ void * KD_TREE::multi_thread_ptr(void * arg){
     handle->multi_thread_rebuild();
 }    
 
+/// @brief 后台重建循环：复制有效点构建新子树，重放期间记录的操作，再替换原子树。
+/// 查询、重建指针和操作队列之间的同步依赖原有锁协议，不能仅凭单个标志判断线程安全。
 void KD_TREE::multi_thread_rebuild(){
     bool terminated = false;
     KD_TREE_NODE * father_ptr, ** new_node_ptr;
@@ -300,6 +310,7 @@ void KD_TREE::multi_thread_rebuild(){
     printf("Rebuild thread terminated normally\n");    
 }
 
+/// @brief 将重建期间记录的增删操作重放到指定根节点，使新子树追上输入变化。
 void KD_TREE::run_operation(KD_TREE_NODE ** root, Operation_Logger_Type operation){
     switch (operation.op)
     {
@@ -334,6 +345,7 @@ void KD_TREE::run_operation(KD_TREE_NODE ** root, Operation_Logger_Type operatio
     }
 }
 
+/// @brief 由整批输入点建立树，释放/重建旧结构的细节由现有实现管理。
 void KD_TREE::Build(PointVector point_cloud){
     if (Root_Node != nullptr){
         delete_tree_nodes(&Root_Node);
@@ -347,6 +359,7 @@ void KD_TREE::Build(PointVector point_cloud){
     Root_Node = STATIC_ROOT_NODE->left_son_ptr;    
 }
 
+/// @brief 执行 k 近邻查询并整理点及距离结果；有效距离含义以 calc_dist() 的平方距离定义为准。
 void KD_TREE::Nearest_Search(PointType point, int k_nearest, PointVector& Nearest_Points, vector<float> & Point_Distance, double max_dist){   
     MANUAL_HEAP q(2*k_nearest);
     q.clear();
@@ -379,6 +392,7 @@ void KD_TREE::Nearest_Search(PointType point, int k_nearest, PointVector& Neares
     return;
 }
 
+/// @brief 逐点增量插入，可按降采样体素选择代表点；返回本轮新增处理计数。
 int KD_TREE::Add_Points(PointVector & PointToAdd, bool downsample_on){
     int NewPointSize = PointToAdd.size();
     int tree_size = size();
@@ -456,6 +470,7 @@ int KD_TREE::Add_Points(PointVector & PointToAdd, bool downsample_on){
     return tmp_counter;
 }
 
+/// @brief 对给定空间框执行恢复/加入范围标记操作，不是直接把箱体网格渲染成点云。
 void KD_TREE::Add_Point_Boxes(vector<BoxPointType> & BoxPoints){     
     for (int i=0;i < BoxPoints.size();i++){
         if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node){
@@ -477,6 +492,7 @@ void KD_TREE::Add_Point_Boxes(vector<BoxPointType> & BoxPoints){
     return;
 }
 
+/// @brief 按具体坐标逻辑删除点；重建时再清理无效数据。
 void KD_TREE::Delete_Points(PointVector & PointToDel){        
     for (int i=0;i<PointToDel.size();i++){
         if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node){               
@@ -498,6 +514,7 @@ void KD_TREE::Delete_Points(PointVector & PointToDel){
     return;
 }
 
+/// @brief 按包围盒逻辑删除树中点，并更新统计及重建操作记录。
 int KD_TREE::Delete_Point_Boxes(vector<BoxPointType> & BoxPoints){
     int tmp_counter = 0;
     for (int i=0;i < BoxPoints.size();i++){ 
@@ -520,6 +537,7 @@ int KD_TREE::Delete_Point_Boxes(vector<BoxPointType> & BoxPoints){
     return tmp_counter;
 }
 
+/// @brief 取出累计删除点记录，供需要管理移除数据的调用方消费。
 void KD_TREE::acquire_removed_points(PointVector & removed_points){
     pthread_mutex_lock(&points_deleted_rebuild_mutex_lock); 
     for (int i = 0; i < Points_deleted.size();i++){
@@ -534,6 +552,7 @@ void KD_TREE::acquire_removed_points(PointVector & removed_points){
     return;
 }
 
+/// @brief 递归选择划分轴和中位点构建较平衡的子树，再维护父子关系与范围。
 void KD_TREE::BuildTree(KD_TREE_NODE ** root, int l, int r, PointVector & Storage){
     if (l>r) return;
     *root = new KD_TREE_NODE;
@@ -601,6 +620,7 @@ void KD_TREE::BuildTree(KD_TREE_NODE ** root, int l, int r, PointVector & Storag
     return;
 }
 
+/// @brief 按子树规模选择同步或后台重建，平衡度和删除比例由 Criterion_Check() 判断。
 void KD_TREE::Rebuild(KD_TREE_NODE ** root){    
     KD_TREE_NODE * father_ptr;
     if ((*root)->TreeSize >= Multi_Thread_Rebuild_Point_Num) { 
@@ -840,6 +860,7 @@ void KD_TREE::Add_by_point(KD_TREE_NODE ** root, PointType point, bool allow_reb
     return;
 }
 
+/// @brief 使用节点包围盒距离进行剪枝，将候选近邻保存在固定容量堆中。
 void KD_TREE::Search(KD_TREE_NODE * root, int k_nearest, PointType point, MANUAL_HEAP &q, double max_dist){
     if (root == nullptr || root->tree_deleted) return;   
     double cur_dist = calc_box_dist(root, point);
@@ -985,6 +1006,7 @@ void KD_TREE::Search(KD_TREE_NODE * root, int k_nearest, PointType point, MANUAL
     return;
 }
 
+/// @brief 遍历与查询框相交的节点并收集有效点。
 void KD_TREE::Search_by_range(KD_TREE_NODE *root, BoxPointType boxpoint, PointVector & Storage){
     if (root == nullptr) return;
     Push_Down(root);       
@@ -1015,6 +1037,7 @@ void KD_TREE::Search_by_range(KD_TREE_NODE *root, BoxPointType boxpoint, PointVe
     return;    
 }
 
+/// @brief 根据节点规模、平衡度及删除比例判断是否触发重建。
 bool KD_TREE::Criterion_Check(KD_TREE_NODE * root){
     if (root->TreeSize <= Minimal_Unbalanced_Tree_Size){
         return false;
@@ -1034,6 +1057,7 @@ bool KD_TREE::Criterion_Check(KD_TREE_NODE * root){
     return false;
 }
 
+/// @brief 把子树级删除/恢复懒标记向子节点传播，维护查询前可见状态。
 void KD_TREE::Push_Down(KD_TREE_NODE *root){
     if (root == nullptr) return;
     Operation_Logger_Type operation;
@@ -1107,6 +1131,7 @@ void KD_TREE::Push_Down(KD_TREE_NODE *root){
     return;
 }
 
+/// @brief 在子节点变化后重算大小、无效点计数、范围和统计指标。
 void KD_TREE::Update(KD_TREE_NODE * root){
     KD_TREE_NODE * left_son_ptr = root->left_son_ptr;
     KD_TREE_NODE * right_son_ptr = root->right_son_ptr;
@@ -1244,6 +1269,7 @@ void KD_TREE::Update(KD_TREE_NODE * root){
     return;
 }
 
+/// @brief 将子树有效点线性化，重建需要这份点集，删除记录按 storage_type 分流。
 void KD_TREE::flatten(KD_TREE_NODE * root, PointVector &Storage, delete_point_storage_set storage_type){
     if (root == nullptr) return;
     Push_Down(root);
@@ -1272,6 +1298,7 @@ void KD_TREE::flatten(KD_TREE_NODE * root, PointVector &Storage, delete_point_st
     return;
 }
 
+/// @brief 递归释放子树与节点关联资源，调用方须保证查询/重建不会继续访问这些节点。
 void KD_TREE::delete_tree_nodes(KD_TREE_NODE ** root){ 
     if (*root == nullptr) return;
     Push_Down(*root);    
@@ -1288,12 +1315,14 @@ bool KD_TREE::same_point(PointType a, PointType b){
     return (fabs(a.x-b.x) < EPSS && fabs(a.y-b.y) < EPSS && fabs(a.z-b.z) < EPSS );
 }
 
+/// @brief 计算三维欧氏距离的平方，近邻比较避免每次开方。
 float KD_TREE::calc_dist(PointType a, PointType b){
     float dist = 0.0f;
     dist = (a.x-b.x)*(a.x-b.x) + (a.y-b.y)*(a.y-b.y) + (a.z-b.z)*(a.z-b.z);
     return dist;
 }
 
+/// @brief 计算查询点到节点轴对齐包围盒的距离下界，用于近邻剪枝。
 float KD_TREE::calc_box_dist(KD_TREE_NODE * node, PointType point){
     if (node == nullptr) return INFINITY;
     float min_dist = 0.0;
@@ -1352,6 +1381,7 @@ MANUAL_HEAP::~MANUAL_HEAP(){
     delete[] heap;
 }
 
+/// @brief 移除堆顶并调整结构，服务于近邻候选维护。
 void MANUAL_HEAP::pop(){
     if (heap_size == 0) return;
     heap[0] = heap[heap_size-1];
@@ -1364,6 +1394,7 @@ PointType_CMP MANUAL_HEAP::top(){
     return heap[0];
 }
         
+/// @brief 把近邻候选放入有容量限制的手写堆，保持最大候选距离便于裁剪。
 void MANUAL_HEAP::push(PointType_CMP point){
     if (heap_size >= cap) return;
     heap[heap_size] = point;
@@ -1419,6 +1450,7 @@ void MANUAL_Q::clear(){
     return;
 }
 
+/// @brief 移除当前队首操作；调用者应按现有队列同步协议访问。
 void MANUAL_Q::pop(){
     if (counter == 0) return;
     head ++;
@@ -1436,6 +1468,7 @@ Operation_Logger_Type MANUAL_Q::back(){
     return q[tail];
 }
 
+/// @brief 将增删操作写入环形操作队列，供后台重建后重放。
 void MANUAL_Q::push(Operation_Logger_Type op){
     q[tail] = op;
     counter ++;

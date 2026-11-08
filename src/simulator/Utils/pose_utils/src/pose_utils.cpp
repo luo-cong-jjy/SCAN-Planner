@@ -1,7 +1,11 @@
+/// @file
+/// 可视化使用的 Armadillo 位姿/旋转工具库，并包含备用状态传播与雅可比函数。
+/// 这里的四元数向量顺序为 [w,x,y,z]，与 ROS 消息字段 x/y/z/w 的排列要显式对应；角度单位 rad。
 #include "pose_utils.h"
 
 // Rotation ---------------------
 
+/// @brief 按 yaw/pitch/roll 构造 Rz*Ry*Rx，返回三维旋转矩阵。
 mat ypr_to_R(const colvec& ypr)
 {
   double c, s;
@@ -39,6 +43,7 @@ mat ypr_to_R(const colvec& ypr)
   return R;
 }
 
+/// @brief 由单个 yaw 构造二维平面旋转矩阵。
 mat yaw_to_R(double yaw)
 {
   mat R = zeros<mat>(2,2);
@@ -51,6 +56,7 @@ mat yaw_to_R(double yaw)
   return R;
 }
 
+/// @brief 从旋转矩阵提取 yaw、pitch、roll；接近欧拉角奇异姿态时要理解其表示局限。
 colvec R_to_ypr(const mat& R)
 {
   colvec n = R.col(0);
@@ -68,6 +74,7 @@ colvec R_to_ypr(const mat& R)
   return ypr;
 }
 
+/// @brief 先归一化输入 [w,x,y,z] 再构造旋转矩阵；调用者应提供非零有效四元数。
 mat quaternion_to_R(const colvec& q)
 {
   double n = norm(q, 2);
@@ -101,6 +108,7 @@ mat quaternion_to_R(const colvec& q)
   return R;
 }
 
+/// @brief 按矩阵迹和最大对角项选择数值分支，输出 [w,x,y,z]。
 colvec R_to_quaternion(const mat& R)
 {
   colvec q(4);
@@ -140,6 +148,7 @@ colvec R_to_quaternion(const mat& R)
   return q;
 }
 
+/// @brief 按 Hamilton 乘积组合两个 [w,x,y,z] 四元数，乘法次序对应旋转复合次序。
 colvec quaternion_mul(const colvec& q1, const colvec& q2)
 {
   double a1 = q1(0);
@@ -160,6 +169,7 @@ colvec quaternion_mul(const colvec& q1, const colvec& q2)
   return q3;
 }
 
+/// @brief 返回共轭四元数；作为旋转逆使用时输入应是单位四元数。
 colvec quaternion_inv(const colvec& q)
 {
   colvec q2(4);
@@ -172,6 +182,7 @@ colvec quaternion_inv(const colvec& q)
 
 // General Pose Update ----------
 
+/// @brief 组合两个三维位姿：用前一姿态旋转后一平移，再组合旋转。
 colvec pose_update(const colvec& X1, const colvec& X2)
 {
   mat R1 = ypr_to_R(X1.rows(3,5));
@@ -185,6 +196,7 @@ colvec pose_update(const colvec& X1, const colvec& X2)
   return X3;
 }
 
+/// @brief 通过旋转转置及反向平移计算三维位姿的逆。
 colvec pose_inverse(const colvec& X)
 {
   mat R = ypr_to_R(X.rows(3,5));
@@ -205,6 +217,7 @@ colvec pose_inverse(const colvec& X)
   return XI;
 }
 
+/// @brief 在二维位置/yaw 表示下组合位姿。
 colvec pose_update_2d(const colvec& X1, const colvec& X2)
 {
   mat R = yaw_to_R(X1(2));
@@ -214,6 +227,7 @@ colvec pose_update_2d(const colvec& X1, const colvec& X2)
   return X3;
 }
 
+/// @brief 计算二维位姿逆变换，角度仍按该工具库的表示处理。
 colvec pose_inverse_2d(const colvec& X)
 {
   double c = cos(X(2));
@@ -228,6 +242,7 @@ colvec pose_inverse_2d(const colvec& X)
 
 // For Pose EKF ----------------------
 
+/// @brief 计算位姿组合对第一输入的雅可比，属于工具接口而非当前主规划优化梯度。
 mat Jplus1(const colvec& X1, const colvec& X2)
 {
   colvec X3 = pose_update(X1,X2);
@@ -262,6 +277,7 @@ mat Jplus1(const colvec& X1, const colvec& X2)
   return J1;
 }
 
+/// @brief 计算位姿组合对第二输入的雅可比。
 mat Jplus2(const colvec& X1, const colvec& X2)
 {
   colvec X3 = pose_update(X1,X2);
@@ -290,6 +306,7 @@ mat Jplus2(const colvec& X1, const colvec& X2)
 
 // For IMU EKF ----------------------
 
+/// @brief 按输入和时间步传播工具库状态；该接口不是 go2_kinematic_sim 当前积分入口。
 colvec state_update(const colvec& X, const colvec& U, double dt)
 {
   double ro = X(3);
@@ -315,6 +332,7 @@ colvec state_update(const colvec& X, const colvec& U, double dt)
   return Xt;
 }
 
+/// @brief 计算状态传播对状态的雅可比，供使用该状态模型的估计接口调用。
 mat jacobianF(const colvec& X, const colvec& U, double dt)
 {
   double x  = X(0);
@@ -429,6 +447,7 @@ mat jacobianF(const colvec& X, const colvec& U, double dt)
   return F;
 }
 
+/// @brief 计算状态传播对输入的雅可比。
 mat jacobianU(const colvec& X, const colvec& U, double dt)
 {
   double x  = X(0);
@@ -515,12 +534,14 @@ mat jacobianU(const colvec& X, const colvec& U, double dt)
   return G;
 }
 
+/// @brief 从内部状态选取观测量，配合 jacobianH() 使用。
 colvec state_measure(const colvec& X)
 {
   colvec Z = X.rows(0,5);
   return Z;
 }
 
+/// @brief 返回 state_measure() 对状态的线性观测雅可比。
 mat jacobianH()
 {
   mat H = zeros<mat>(6,9);

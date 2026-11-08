@@ -1,3 +1,7 @@
+/// @file
+/// 里程计可视化节点：由 simulator.xml 启动，在仿真和真机模式均可接收机身 Odometry。
+/// 输出私有 pose/path/velocity 等话题和模型显示，并按配置发布 world→base 及原始传感器显示 TF。
+/// sliding_map 的 TF 由 GridMap 发布，不能把所有显示坐标系都归到本节点。
 #include <iostream>
 #include <string>
 #include <string.h>
@@ -47,6 +51,7 @@ visualization_msgs::Marker meshROS;
 sensor_msgs::Range         heightROS;
 string _frame_id;
 
+/// @brief 将机身位置、姿态和速度转换为历史路径、Marker、模型姿态及 TF；不参与轨迹控制反馈计算。
 void odom_callback(const nav_msgs::Odometry::ConstPtr& msg)
 {
   if (msg->header.frame_id == string("null"))
@@ -364,6 +369,7 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr& msg)
   meshPub.publish(meshROS);                                                  
 
   // TF for raw sensor visualization
+  // 按显示配置额外发布 base 下的 laser/vision/height 旋转坐标系；不替代真实标定外参。
   if (tf45)
   {
     tf::Transform transform;
@@ -392,38 +398,116 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr& msg)
   } 
 }
 
+/// @brief 读取颜色、网格资源、坐标系和显示开关，按全局 body_pose_topic 订阅位姿，再进入回调循环。
 int main(int argc, char** argv)
 {
   ros::init(argc, argv, "odom_visualization");
   ros::NodeHandle n("~");
 
+  // 本段读取启动配置：下方“正常默认”来自当前 launch/XML，实际运行以参数服务器为准。
+  // param() 的末项仅是缺参回退；getParam()/必需参数封装没有这一回退，具体见各行说明。
+  // 参数读取：里程计显示 Marker 使用的网格 URI，默认继承上游 hummingbird 模型；Go2 本体另由 URDF 显
+  // 示。
+  // 配置位置：私有 /odom_visualization/mesh_resource；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：std::string("package://odom_visualization/meshes/hummingbird.mesh")；只有参数服务器中
+  // 没有该键时才使用。
   n.param("mesh_resource", mesh_resource, std::string("package://odom_visualization/meshes/hummingbird.mesh"));
+  // 参数读取：里程计显示颜色的红通道，范围通常为 0~1。
+  // 配置位置：私有 /odom_visualization/color/r；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.0；只有参数服务器中没有该键时才使用。
   n.param("color/r", color_r, 0.0);
+  // 参数读取：里程计显示颜色的绿通道，范围通常为 0~1。
+  // 配置位置：私有 /odom_visualization/color/g；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.0；只有参数服务器中没有该键时才使用。
   n.param("color/g", color_g, 0.0);
+  // 参数读取：里程计显示颜色的蓝通道，范围通常为 0~1。
+  // 配置位置：私有 /odom_visualization/color/b；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.0；只有参数服务器中没有该键时才使用。
   n.param("color/b", color_b, 0.0);
+  // 参数读取：里程计显示颜色的透明度，0=透明，1=不透明。
+  // 配置位置：私有 /odom_visualization/color/a；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：1.0；只有参数服务器中没有该键时才使用。
   n.param("color/a", color_a, 1.0);
+  // 参数读取：里程计显示是否以首次位置为原点；影响本显示节点的数据，不修改规划器的目标坐标。
+  // 配置位置：私有 /odom_visualization/origin；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：false；只有参数服务器中没有该键时才使用。
   n.param("origin", origin, false);  
+  // 参数读取：里程计 Marker 模型的显示缩放比例，不改变规划碰撞模型。
+  // 配置位置：私有 /odom_visualization/robot_scale；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：1.0；只有参数服务器中没有该键时才使用。
   n.param("robot_scale", scale, 1.0);
+  // 参数读取：本节点输出消息所使用的世界参考系名称；名称设置本身不执行坐标变换。
+  // 配置位置：私有 /odom_visualization/frame_id；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：string("world")；只有参数服务器中没有该键时才使用。
   n.param("frame_id",   _frame_id, string("world") );    
  
+  // 参数读取：里程计 Marker 的显示姿态修正选择，不改变机身状态反馈。
+  // 配置位置：私有 /odom_visualization/cross_config；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：false；只有参数服务器中没有该键时才使用。
   n.param("cross_config", cross_config, false);    
+  // 参数读取：是否发布 world→base 及 laser/vision/height 等显示用 TF，默认 true。
+  // 配置位置：私有 /odom_visualization/tf45；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：true；只有参数服务器中没有该键时才使用。
   n.param("tf45", tf45, true);
+  // 参数读取：协方差显示的缩放比例，不是滤波器噪声配置。
+  // 配置位置：私有 /odom_visualization/covariance_scale；当前主 launch 未覆盖此键，取下面的缺参回退
+  // 。
+  // 缺参回退：100.0；只有参数服务器中没有该键时才使用。
   n.param("covariance_scale",    cov_scale,  100.0);
+  // 参数读取：是否绘制位置协方差显示对象。
+  // 配置位置：私有 /odom_visualization/covariance_position；当前主 launch 未覆盖此键，取下面的缺参
+  // 回退。
+  // 缺参回退：false；只有参数服务器中没有该键时才使用。
   n.param("covariance_position", cov_pos,    false);    
+  // 参数读取：是否绘制速度协方差显示对象。
+  // 配置位置：私有 /odom_visualization/covariance_velocity；当前主 launch 未覆盖此键，取下面的缺参
+  // 回退。
+  // 缺参回退：false；只有参数服务器中没有该键时才使用。
   n.param("covariance_velocity", cov_vel,    false);    
+  // 参数读取：是否根据协方差改变显示颜色。
+  // 配置位置：私有 /odom_visualization/covariance_color；当前主 launch 未覆盖此键，取下面的缺参回退
+  // 。
+  // 缺参回退：false；只有参数服务器中没有该键时才使用。
   n.param("covariance_color",    cov_color,  false);    
   
   std::string body_pose_topic;
+  // 参数读取：机身 Odometry 接口；默认仿真 /quad_0/body_pose，真机由父 launch 切到
+  // /LIO/odom_vehicle。
+  // 配置来源：run.launch → /body_pose_topic；正常默认启动取 /quad_0/body_pose。
+  // 缺参回退：std::string("/quad_0/body_pose")；只有参数服务器中没有该键时才使用。
   ros::param::param<std::string>("/body_pose_topic", body_pose_topic, std::string("/quad_0/body_pose"));
+  // 运行连接（接收入口）：机身 Odometry 接口，实际名称由 /body_pose_topic 指定；默认仿真
+  // /quad_0/body_pose，接入规划/控制/感知/显示相应回调。
+  // 队列容量：100 条消息，不是发布/规划频率。 到达后交给 odom_callback。
   ros::Subscriber sub_odom = n.subscribe(body_pose_topic, 100, odom_callback);
+  // 运行连接（输出入口）：里程计显示节点的当前位姿输出，默认 /odom_visualization/pose。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   posePub   = n.advertise<geometry_msgs::PoseStamped>("pose",                100, true);
+  // 运行连接（输出入口）：里程计显示节点的历史实际路径输出，默认 /odom_visualization/path，用于与规
+  // 划轨迹对照。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   pathPub   = n.advertise<nav_msgs::Path>(            "path",                100, true);
+  // 运行连接（输出入口）：里程计显示节点的速度 Marker，默认 /odom_visualization/velocity。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   velPub    = n.advertise<visualization_msgs::Marker>("velocity",            100, true);
+  // 运行连接（输出入口）：里程计显示节点的位置不确定性 Marker，是否更新由显示开关控制。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   covPub    = n.advertise<visualization_msgs::Marker>("covariance",          100, true);
+  // 运行连接（输出入口）：里程计显示节点的速度不确定性 Marker，属于显示数据而非滤波器输入。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   covVelPub = n.advertise<visualization_msgs::Marker>("covariance_velocity", 100, true);
+  // 运行连接（输出入口）：里程计显示节点的辅助轨迹 Marker，与 FSM 发布的可执行 Bspline 分开。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   trajPub   = n.advertise<visualization_msgs::Marker>("trajectory",          100, true);
+  // 运行连接（输出入口）：里程计显示节点的辅助传感器 Marker，不提供真实传感器标定。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   sensorPub = n.advertise<visualization_msgs::Marker>("sensor",              100, true);
+  // 运行连接（输出入口）：里程计显示节点的网格 Marker，Go2 的关节模型另由 robot_state_publisher 显
+  // 示。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   meshPub   = n.advertise<visualization_msgs::Marker>("robot",               100, true);  
+  // 运行连接（输出入口）：里程计显示节点的高度显示接口（Range）。
+  // 队列容量：100 条消息，不是发布/规划频率。 锁存最后一条消息，供新连接的订阅者立即取得。
   heightPub = n.advertise<sensor_msgs::Range>(        "height",              100, true);  
   tf::TransformBroadcaster b;
   broadcaster = &b;

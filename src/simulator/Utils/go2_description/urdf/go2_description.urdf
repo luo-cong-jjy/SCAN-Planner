@@ -1,5 +1,13 @@
 <?xml version='1.0' encoding='utf-8'?>
+<!--
+  run.launch 将此文件全文加载到 robot_description；robot_state_publisher 结合 joint_states 发布关节 TF。
+  visual/collision/inertial 分别描述显示网格、碰撞几何与惯性参数，默认机身运动学仿真不按 URDF 做接触动力学。
+  保留原模型的惯性、关节、网格及材质数值；根链接 base 带惯性可能触发 KDL 的根惯性兼容提示。
+-->
 <robot name="go2_description">
+  <!--
+    模型根链接 base；默认 world→base 的机身 TF 由 odom_visualization 提供。
+  -->
   <link name="base">
     <inertial>
       <origin xyz="0.021112 0 -0.005366" rpy="0 0 0" />

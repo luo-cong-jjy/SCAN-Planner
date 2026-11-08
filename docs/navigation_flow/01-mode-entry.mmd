@@ -1,0 +1,40 @@
+flowchart TD
+  init["init(nh)<br/>读取参数、创建模块、注册回调<br/>mode 2 在初始化前段加载关键点 YAML"]
+  choice{"navi_mode_"}
+  in1["mode 1：RViz 点击<br/>/move_base_simple/goal"]
+  cb1["rvizGoalCallback()<br/>把单目标包装成单点 Path"]
+  wp1["waypointCallback()<br/>取目标 XY，z 用首次机身高度<br/>内部：Manager::planGlobalTraj()<br/>再 adjustGlobalTargetIfOccupied()"]
+  r1["参考生成成功<br/>have_target_ / have_new_target_ = true"]
+  wait2["mode 2：预设关键点<br/>等待机身位姿，spinOnce() 处理回调"]
+  given["planGlobalTrajbyGivenWps()<br/>复制活动序列，current_wp_=0"]
+  next["planNextWaypoint()<br/>内部：setStartStateFromOdomOrCurrentTraj()<br/>→ Manager::planGlobalTraj()<br/>→ adjustGlobalTargetIfOccupied()"]
+  r2["首段参考成功<br/>changeFSMExecState(GEN_NEW_TRAJ)"]
+  in3["mode 3：外部路线<br/>/initial_path"]
+  cb3["pathCallback()<br/>筛选路径点，z 加 body_height_"]
+  wps3["planGlobalTrajByWaypoints()<br/>内部：Manager::planGlobalTrajWaypoints()<br/>再 adjustGlobalTargetIfOccupied()"]
+  r3["参考生成成功<br/>have_target_ / have_new_target_ = true"]
+  fsm["共用 execFSMCallback()<br/>由执行定时器调度"]
+  init --> choice
+  choice -->|"1"| in1
+  choice -->|"2"| wait2
+  choice -->|"3"| in3
+  in1 -. "消息到达" .-> cb1
+  cb1 -->|"直接调用"| wp1
+  wp1 -->|"成功"| r1
+  wait2 -->|"位姿就绪"| given
+  given -->|"直接调用"| next
+  next -->|"成功返回"| r2
+  in3 -. "消息到达" .-> cb3
+  cb3 -->|"直接调用"| wps3
+  wps3 -->|"成功"| r3
+  r1 -. "更新标志/状态，后续定时处理" .-> fsm
+  r2 -. "后续处理 GEN_NEW_TRAJ" .-> fsm
+  r3 -. "更新标志/状态，后续定时处理" .-> fsm
+  classDef function fill:#e8f3ff,stroke:#3478b8,color:#17212b;
+  class init,cb1,wp1,given,next,cb3,wps3,fsm function;
+  classDef state fill:#f0e9ff,stroke:#7754b3,color:#17212b;
+  class r1,r2,r3 state;
+  classDef input fill:#e9f8ed,stroke:#3a8251,color:#17212b;
+  class in1,wait2,in3 input;
+  classDef decision fill:#fff3d9,stroke:#aa7c2c,color:#17212b;
+  class choice decision;

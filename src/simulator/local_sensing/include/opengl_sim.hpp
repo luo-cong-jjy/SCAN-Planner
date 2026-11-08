@@ -1,3 +1,7 @@
+/// @file
+/// OpenGL 雷达渲染组件，供 opengl_render_node 的激光分支调用，USE_GPU=OFF 时不参与默认目标。
+/// 负责图形上下文、场景几何、深度缓冲和点云重建；GLM/GLAD/GLFW 等通用库保持原样。
+/// 本文件包含实现，图形资源需在有效上下文中创建和释放；仿真深度与真实传感器误差模型不同。
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/common/transforms.h>
@@ -183,6 +187,7 @@ class opengl_pointcloud_render
 
 };
 
+/// @brief 保存视场、像素/角度分辨率、近远裁剪和扫描模式，供渲染与反投影共用。
 void opengl_pointcloud_render::setParameters(int width, int height, float fx, float fy, float downsample_res, float polar_res_, float yaw_fov_, float vertical_fov_,\
                                     float near,float far,int sensing_rate,int use_avia_pattern, int use_os128_pattern, int use_minicf_pattern)
 {
@@ -225,6 +230,7 @@ void opengl_pointcloud_render::setParameters(int width, int height, float fx, fl
     
 }
 
+/// @brief 保存可选动态场景点云，后续与静态场景一起生成观测。
 void opengl_pointcloud_render::input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> input_cloud)
 {
     this->dyn_clouds = input_cloud;
@@ -273,6 +279,7 @@ void opengl_pointcloud_render::input_dyn_clouds(pcl::PointCloud<pcl::PointXYZI> 
 //     glViewport(0, 0, screen_width, screen_height);
 // }
 
+/// @brief 从文件准备场景及图形资源；失败处理和支持格式沿用原实现。
 void opengl_pointcloud_render::read_pointcloud_fromfile(std::string map_filename){
 
     // glfw: initialize and configure
@@ -450,6 +457,7 @@ void opengl_pointcloud_render::read_pointcloud_fromfile(std::string map_filename
     ourShader.use();
 }
 
+/// @brief 用话题输入的场景点云初始化或更新渲染数据，与文件加载分支互为替代来源。
 void opengl_pointcloud_render::read_pointcloud_fromcloud(const pcl::PointCloud<PointType>& input_cloud){
 
     // glfw: initialize and configure
@@ -536,6 +544,7 @@ opengl_pointcloud_render::~opengl_pointcloud_render(){
     glfwTerminate();
 }
 
+/// @brief 在给定位姿下渲染深度并按扫描模式重建观测点云，输出通过共享点云参数返回。
 void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr output_pointcloud, Eigen::Vector3f camera_pos, \
                     Eigen::Quaternionf camera_q, double t_pattern_start)
 {        
@@ -826,6 +835,7 @@ void opengl_pointcloud_render::render_pointcloud(pcl::PointCloud<PointType>::Ptr
 }
 
 //preprocess pointcloud data
+/// @brief 对场景点与法线做渲染前整理，支持后续几何/可见性处理。
 void opengl_pointcloud_render::preprocess(pcl::PointCloud< PointType > cloud_all_map, pcl::PointCloud<pcl::Normal>::Ptr all_normals)
 {
                   pcl::NormalEstimation<PointType,pcl::Normal> normalEstimation;
@@ -846,6 +856,7 @@ void opengl_pointcloud_render::preprocess(pcl::PointCloud< PointType > cloud_all
                   pcl::io::savePCDFileASCII(normal_filename, *all_normals);
 }
 
+/// @brief 把动态几何合成到已有深度图，按当前遮挡/距离规则更新像素。
 void opengl_pointcloud_render::render_dynclouds_on_depthimage(cv::Mat& depth_image)
 {
 
@@ -939,6 +950,7 @@ void opengl_pointcloud_render::render_dynclouds_on_depthimage(cv::Mat& depth_ima
         // std::cout << "One frame interline costs " << second.count() << " seconds, " << "first for loop costs "<< second2.count() << endl;
 }
 
+/// @brief 按当前插值策略填补深度图采样间隙，属于模拟传感器后处理。
 void opengl_pointcloud_render::depth_interline_on_depthimage(cv::Mat& depth_image)
 {
 
@@ -1177,6 +1189,7 @@ void opengl_pointcloud_render::faces_need_draw_from_depthimage(cv::Mat& depth_im
 }
 
 //from depth image to point cloud
+/// @brief 把深度图及扫描采样规则转换为点云，注意像素深度与射线长度的定义差异。
 void opengl_pointcloud_render::depth_to_pointcloud(cv::Mat& depth_image, pcl::PointCloud<PointType>::Ptr origin_cloud, \
                         std::vector<Eigen::Matrix<float, 3, 1> >& depth_ptcloud_vec,\
                         vector<vector<Eigen::Matrix<float, 3, 1> > >& interline_ptcloud_vec)
@@ -1414,6 +1427,7 @@ inline cv::Mat opengl_pointcloud_render::colormap_depth_img(cv::Mat & depth_mat)
     return cm_img0;
 }
 
+/// @brief 从图形缓冲读回深度，按当前投影和精度配置转换为可处理数据。
 void opengl_pointcloud_render::read_depth( int depth_buffer_precision , std::vector<Eigen::Matrix<float, 3, 1> >& depth_ptcloud_vec)
 {
     if ( depth_buffer_precision == 16 )
@@ -1592,6 +1606,7 @@ void opengl_pointcloud_render::read_depth( int depth_buffer_precision , std::vec
     }
 }
 
+/// @brief 深度读回后生成点坐标的辅助路径，具体坐标系取决于当前渲染矩阵。
 void opengl_pointcloud_render::read_depth2pointcloud( int depth_buffer_precision , std::vector<Eigen::Matrix<float, 3, 1> >& depth_ptcloud_vec)
 {
         int image_width = 2*width;
@@ -1627,12 +1642,14 @@ void opengl_pointcloud_render::read_depth2pointcloud( int depth_buffer_precision
 
 }
 
+/// @brief 根据 near/far 把深度缓冲的非线性数值转换到线性深度尺度。
 float opengl_pointcloud_render::LinearizeDepth(float depth,float near, float far) 
 {
     float z = depth * 2.0 - 1.0; // back to NDC 
     return (2.0 * near * far) / (far + near - z * (far - near));    
 }
 
+/// @brief 按当前投影关系恢复深度值，须与图形管线的近远平面一致。
 float opengl_pointcloud_render::regainrealdepth(float depth,float near, float far) 
 {
     return 1.0/(1.0/near + depth* (1.0/far - 1.0/near));   
@@ -2312,6 +2329,7 @@ void opengl_pointcloud_render::interlinebytriangles(cv::Mat& depth_image)
 
 }
 
+/// @brief 以位置、视场方向和夹角检查候选点，用于减少不必要渲染/处理。
 bool opengl_pointcloud_render::is_in_fov(Eigen::Vector3f pt, Eigen::Vector3f pos, Eigen::Vector3f fov_direction, double fov_angle)
 {
     //get the direction vector
@@ -2378,6 +2396,7 @@ int opengl_pointcloud_render::count_fov_point_num(pcl::PointCloud< PointType > c
         std::cout << "One search in kdtree cost " << second.count() << " seconds\n";
 }
 
+/// @brief 执行可选的高斯相关深度插值处理，不等同于真实相机完整噪声模型。
 void opengl_pointcloud_render::new_gaussian_interline(cv::Mat  & depth_mat)
 {
 

@@ -1,0 +1,22 @@
+flowchart TD
+  gen["GEN_NEW_TRAJ<br/>setStartStateFromOdomOrCurrentTraj()<br/>→ callReboundReplan()"]
+  rep["REPLAN_TRAJ<br/>planFromCurrentTraj()<br/>→ callReboundReplan()，可更换初值再试"]
+  chain["callReboundReplan() 内部共用调用链<br/>getLocalTarget()<br/>→ Manager::reboundReplan()<br/>→ 成功后发布 /planning/bspline<br/>→ displayOptimalTraj()"]
+  exec["EXEC_TRAJ<br/>监视当前局部轨迹执行"]
+  retry["生成/重规划入口最终失败<br/>保留原 GEN / REPLAN 状态，下轮重试<br/>finishProcess() 达上限后急停（见图 3）"]
+  next["仅 mode 2：还有下一关键点<br/>current_wp_++ → planNextWaypoint()"]
+  wait["WAIT_TARGET<br/>清除当前有效目标，等待下一任务"]
+  gen -->|"调用"| chain
+  rep -->|"内部可多次尝试"| chain
+  chain -. "入口返回成功，迁移状态" .-> exec
+  chain -. "入口所有尝试均失败" .-> retry
+  exec -. "满足普通重规划距离条件" .-> rep
+  exec -. "mode 2：近点或段时间结束，且有下一点" .-> next
+  next -. "切换目标后进入新规划" .-> gen
+  exec -. "局部轨迹时间结束，且无需切下一点" .-> wait
+  classDef function fill:#e8f3ff,stroke:#3478b8,color:#17212b;
+  class chain,retry,next function;
+  classDef state fill:#f0e9ff,stroke:#7754b3,color:#17212b;
+  class gen,rep,exec,wait state;
+  classDef input fill:#e9f8ed,stroke:#3a8251,color:#17212b;
+  classDef decision fill:#fff3d9,stroke:#aa7c2c,color:#17212b;

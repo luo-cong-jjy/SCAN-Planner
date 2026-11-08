@@ -1,3 +1,7 @@
+/// @file
+/// 多种仿真场景的几何生成器，Maps::generate() 按 type 选择具体算法。
+/// 默认 type=2 为随机箱体表面点云，固定 seed 便于同一实现和环境下复现；空间单位由 scale 转换。
+/// 场景点云是仿真环境真值，局部规划地图需要通过模拟观测另行建立。
 #include "maps.hpp"
 
 #include <algorithm>
@@ -11,6 +15,7 @@
 
 using namespace mocka;
 
+/// @brief 按固定种子抽取箱体位置、宽度和高度，在侧面、底面和顶面按 surface_resolution 采样。
 void
 Maps::randomMapGenerate()
 {
@@ -29,12 +34,32 @@ Maps::randomMapGenerate()
   double _w_l, _w_h;
   int    _ObsNum;
 
+  // 本段读取启动配置：下方“正常默认”来自当前 launch/XML，实际运行以参数服务器为准。
+  // param() 的末项仅是缺参回退；getParam()/必需参数封装没有这一回退，具体见各行说明。
+  // 参数读取：随机箱体底面宽度的抽样下限，单位 m。
+  // 配置来源：simulator.xml → /mockamap_node/width_min；正常默认启动取 0.2。
+  // 缺参回退：0.6；只有参数服务器中没有该键时才使用。
   info.nh_private->param("width_min", _w_l, 0.6);
+  // 参数读取：随机箱体底面宽度的抽样上限，单位 m；抽样中心和宽度共同决定表面位置。
+  // 配置来源：simulator.xml → /mockamap_node/width_max；正常默认启动取 0.8。
+  // 缺参回退：1.5；只有参数服务器中没有该键时才使用。
   info.nh_private->param("width_max", _w_h, 1.5);
+  // 参数读取：随机箱体高度抽样下限，单位 m；当前与上限同为 2，生成等高箱体。
+  // 配置来源：simulator.xml → /mockamap_node/height_min；正常默认启动取 2.0。
+  // 缺参回退：_h_l；只有参数服务器中没有该键时才使用。
   info.nh_private->param("height_min", _h_l, _h_l);
+  // 参数读取：随机箱体高度抽样上限，单位 m；生成器还按地图高度限制有效范围。
+  // 配置来源：simulator.xml → /mockamap_node/height_max；正常默认启动取 2.0。
+  // 缺参回退：_h_h；只有参数服务器中没有该键时才使用。
   info.nh_private->param("height_max", _h_h, _h_h);
+  // 参数读取：随机箱体抽样数量，不等于点云点数；箱体相交时最终独立可见障碍数也可能不同。
+  // 配置来源：simulator.xml → /mockamap_node/obstacle_number；正常默认启动取 500。
+  // 缺参回退：10；只有参数服务器中没有该键时才使用。
   info.nh_private->param("obstacle_number", _ObsNum, 10);
   double surface_resolution;
+  // 参数读取：箱体表面采样间距的目标尺度，单位 m；越小通常生成越多场景点。
+  // 配置来源：simulator.xml → /mockamap_node/surface_resolution；正常默认启动取 0.05。
+  // 缺参回退：_resolution * 0.5；只有参数服务器中没有该键时才使用。
   info.nh_private->param("surface_resolution", surface_resolution, _resolution * 0.5);
 
   _h_l = std::max(0.0, _h_l);
@@ -111,6 +136,7 @@ Maps::randomMapGenerate()
   pcl2ros();
 }
 
+/// @brief 把几何点云转换为世界系 PointCloud2 并写入调用方输出对象。
 void
 Maps::pcl2ros()
 {
@@ -120,6 +146,7 @@ Maps::pcl2ros()
            info.cloud->width / (1.0 * info.sizeX * info.sizeY * info.sizeZ));
 }
 
+/// @brief 读取复杂度、阈值和分形参数，按三维噪声值生成障碍几何，默认 type=2 不执行此分支。
 void
 Maps::perlin3D()
 {
@@ -128,9 +155,21 @@ Maps::perlin3D()
   int    fractal;
   double attenuation;
 
+  // 参数读取：仅 Perlin 分支使用的空间噪声变化尺度；默认 type 2 不使用它。
+  // 配置来源：simulator.xml → /mockamap_node/complexity；正常默认启动取 0.05。
+  // 缺参回退：0.142857；只有参数服务器中没有该键时才使用。
   info.nh_private->param("complexity", complexity, 0.142857);
+  // 参数读取：Perlin 分支选择噪声分位阈值的填充比例，默认 type 2 不使用它。
+  // 配置来源：simulator.xml → /mockamap_node/fill；正常默认启动取 0.12。
+  // 缺参回退：0.38；只有参数服务器中没有该键时才使用。
   info.nh_private->param("fill", fill, 0.38);
+  // 参数读取：Perlin 分支叠加的噪声层数，正整数；默认 type 2 不使用它。
+  // 配置来源：simulator.xml → /mockamap_node/fractal；正常默认启动取 1。
+  // 缺参回退：1；只有参数服务器中没有该键时才使用。
   info.nh_private->param("fractal", fractal, 1);
+  // 参数读取：Perlin 分支各层幅度的缩放系数，具体按 attenuation/层序号计算。
+  // 配置来源：simulator.xml → /mockamap_node/attenuation；正常默认启动取 0.1。
+  // 缺参回退：0.5；只有参数服务器中没有该键时才使用。
   info.nh_private->param("attenuation", attenuation, 0.5);
 
   info.cloud->width  = info.sizeX * info.sizeY * info.sizeZ;
@@ -199,6 +238,7 @@ Maps::perlin3D()
   pcl2ros();
 }
 
+/// @brief 递归划分指定二维网格区域并设置通道，用于迷宫结构构造。
 void
 Maps::recursiveDivision(int xl, int xh, int yl, int yh, Eigen::MatrixXi& maze)
 {
@@ -519,6 +559,7 @@ Maps::recursiveDivision(int xl, int xh, int yl, int yh, Eigen::MatrixXi& maze)
   }
 }
 
+/// @brief 为迷宫网格组织递归分割过程，保留原函数拼写。
 void
 Maps::recursizeDivisionMaze(Eigen::MatrixXi& maze)
 {
@@ -623,6 +664,7 @@ Maps::recursizeDivisionMaze(Eigen::MatrixXi& maze)
   }
 }
 
+/// @brief 将二维迷宫网格转成可发布的三维障碍点云。
 void
 Maps::maze2D()
 {
@@ -630,9 +672,21 @@ Maps::maze2D()
   int    type;
   int    addWallX;
   int    addWallY;
+  // 参数读取：仅二维迷宫分支使用的通路宽度（m），参与迷宫离散格数计算。
+  // 配置位置：私有 /mockamap_node/road_width；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：1.0；只有参数服务器中没有该键时才使用。
   info.nh_private->param("road_width", width, 1.0);
+  // 参数读取：仅二维迷宫分支使用的 x 方向外围墙开关。
+  // 配置位置：私有 /mockamap_node/add_wall_x；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   info.nh_private->param("add_wall_x", addWallX, 0);
+  // 参数读取：仅二维迷宫分支使用的 y 方向外围墙开关。
+  // 配置位置：私有 /mockamap_node/add_wall_y；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0；只有参数服务器中没有该键时才使用。
   info.nh_private->param("add_wall_y", addWallY, 0);
+  // 参数读取：二维迷宫内部生成方式选择；仅 Maps::maze2D() 读取。
+  // 配置位置：私有 /mockamap_node/maze_type；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：1；只有参数服务器中没有该键时才使用。
   info.nh_private->param("maze_type", type, 1);
 
   int mx = info.sizeX / (width * info.scale);
@@ -699,11 +753,13 @@ Maps::maze2D()
 }
 
 Maps::BasicInfo
+/// @brief 返回生成器配置副本。
 Maps::getInfo() const
 {
   return info;
 }
 
+/// @brief 接收场景尺寸、种子、参数句柄和输出存储指针。
 void
 Maps::setInfo(const BasicInfo& value)
 {
@@ -714,6 +770,7 @@ Maps::Maps()
 {
 }
 
+/// @brief 场景分派：1=Perlin，2=随机箱体，3=二维迷宫，4=三维迷宫；完成后由主节点重复发布。
 void
 Maps::generate(int type)
 {
@@ -797,6 +854,7 @@ MazePoint::setDist2(double set)
   dist2 = set;
 }
 
+/// @brief 构造三维迷宫及其连接关系，再转换为点云，属于可选场景。
 void
 Maps::Maze3DGen()
 {
@@ -806,9 +864,21 @@ Maps::Maze3DGen()
   int    nodeRad;
   int    roadRad;
 
+  // 参数读取：三维迷宫的基础节点数量，仅 type 4 场景读取。
+  // 配置位置：私有 /mockamap_node/numNodes；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：10；只有参数服务器中没有该键时才使用。
   info.nh_private->param("numNodes", numNodes, 10);
+  // 参数读取：三维迷宫连通相关比例，仅 type 4 读取，具体选择过程见后续几何生成。
+  // 配置位置：私有 /mockamap_node/connectivity；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：0.5；只有参数服务器中没有该键时才使用。
   info.nh_private->param("connectivity", connectivity, 0.5);
+  // 参数读取：三维迷宫节点几何的离散半径参数，按本生成器的尺度转成场景点，不是机器人半径。
+  // 配置位置：私有 /mockamap_node/nodeRad；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：3；只有参数服务器中没有该键时才使用。
   info.nh_private->param("nodeRad", nodeRad, 3);
+  // 参数读取：三维迷宫连接道路几何的离散半径参数，按本生成器尺度使用。
+  // 配置位置：私有 /mockamap_node/roadRad；当前主 launch 未覆盖此键，取下面的缺参回退。
+  // 缺参回退：2；只有参数服务器中没有该键时才使用。
   info.nh_private->param("roadRad", roadRad, 2);
   ROS_INFO("received parameters : numNodes: %d connectivity: "
            "%f nodeRad: %d roadRad: %d",

@@ -1,3 +1,7 @@
+/// @file
+/// B 样条局部优化：根据地图碰撞段建立避障基点/方向，再通过 L-BFGS 优化控制点。
+/// Rebound 使用平滑、碰撞、可行性代价；Refine 使用平滑、参考贴合、可行性代价。
+/// 两阶段组合梯度都把 z 行置零，高度受管理器参考构造约束；代价最小化不等于连续安全证明。
 #include "bspline_opt/bspline_optimizer.h"
 #include "bspline_opt/gradient_descent_optimizer.h"
 #include <algorithm>
@@ -7,25 +11,61 @@
 namespace scan_planner
 {
 
+  /// @brief 读取优化权重、期望避障间距、名义速度和加速度上限，以及 B 样条阶数。
   void BsplineOptimizer::setParam(ros::NodeHandle &nh)
   {
+    // 本段读取启动配置：下方“正常默认”来自当前 launch/XML，实际运行以参数服务器为准。
+    // param() 的末项仅是缺参回退；getParam()/必需参数封装没有这一回退，具体见各行说明。
+    // 参数读取：平滑性权重；当前默认代价使用控制点三阶差分的平方和，作为 jerk 相关的平滑度度量。
+    // 配置来源：advanced_param.xml → /scan_planner_node/optimization/lambda_smooth；正常默认启动取
+    // 1.0。
+    // 缺参回退：-1.0；只有参数服务器中没有该键时才使用。
     nh.param("optimization/lambda_smooth", lambda1_, -1.0);
+    // 参数读取：Rebound 避障距离代价的初始权重；重启优化时内部可增大该权重以加强避障。
+    // 配置来源：advanced_param.xml → /scan_planner_node/optimization/lambda_collision；正常默认启动
+    // 取 1.0。
+    // 缺参回退：-1.0；只有参数服务器中没有该键时才使用。
     nh.param("optimization/lambda_collision", lambda2_, -1.0);
+    // 参数读取：速度和加速度超限的软惩罚权重；提高它加强可行性代价，但仍须通过结果检查。
+    // 配置来源：advanced_param.xml → /scan_planner_node/optimization/lambda_feasibility；正常默认启
+    // 动取 0.1。
+    // 缺参回退：-1.0；只有参数服务器中没有该键时才使用。
     nh.param("optimization/lambda_feasibility", lambda3_, -1.0);
+    // 参数读取：Refine 阶段贴合参考轨迹的权重，由 calcFitnessCost() 使用；不直接加入 Rebound 的总代
+    // 价。
+    // 配置来源：advanced_param.xml → /scan_planner_node/optimization/lambda_fitness；正常默认启动取
+    // 1.0。
+    // 缺参回退：-1.0；只有参数服务器中没有该键时才使用。
     nh.param("optimization/lambda_fitness", lambda4_, -1.0);
 
+    // 参数读取：避障代价中的期望间距，单位 m；沿构造的避障方向计算控制点相对基点的投影距离。它与地
+    // 图中的机器人半径、障碍膨胀裕量用途不同，不能直接等同于真实障碍物的欧氏安全距离。
+    // 配置来源：advanced_param.xml → /scan_planner_node/optimization/dist0；正常默认启动取 0.2。
+    // 缺参回退：-1.0；只有参数服务器中没有该键时才使用。
     nh.param("optimization/dist0", dist0_, -1.0);
+    // 参数读取：优化器速度软惩罚的名义阈值，单位 m/s；通过控制点差分计算各轴速度。
+    // 配置来源：advanced_param.xml → /scan_planner_node/optimization/max_vel；正常默认启动取 0.75。
+    // 缺参回退：-1.0；只有参数服务器中没有该键时才使用。
     nh.param("optimization/max_vel", max_vel_, -1.0);
+    // 参数读取：优化器加速度软惩罚的名义阈值，单位 m/s²；通过控制点二阶差分估计各轴加速度。
+    // 配置来源：advanced_param.xml → /scan_planner_node/optimization/max_acc；正常默认启动取 0.5。
+    // 缺参回退：-1.0；只有参数服务器中没有该键时才使用。
     nh.param("optimization/max_acc", max_acc_, -1.0);
 
+    // 参数读取：B 样条次数，默认 3；决定边界固定控制点数及优化变量区间。
+    // 配置位置：私有 /scan_planner_node/optimization/order；当前主 launch 未覆盖此键，取下面的缺参
+    // 回退。
+    // 缺参回退：3；只有参数服务器中没有该键时才使用。
     nh.param("optimization/order", order_, 3);
   }
 
+  /// @brief 保存共享地图指针，使搜索、优化和状态机查询同一地图实例。
   void BsplineOptimizer::setEnvironment(const GridMap::Ptr &env)
   {
     this->grid_map_ = env;
   }
 
+  /// @brief 由相邻位置的 XY 方向估计碰撞查询朝向，退化水平位移返回零朝向。
   double BsplineOptimizer::estimateSegmentYaw(const Eigen::Vector3d &from, const Eigen::Vector3d &to) const
   {
     Eigen::Vector2d diff(to(0) - from(0), to(1) - from(1));
@@ -34,8 +74,10 @@ namespace scan_planner
     return std::atan2(diff(1), diff(0));
   }
 
+  /// @brief 用控制点前后邻居估计局部切向朝向，边界处截断索引。
   double BsplineOptimizer::estimateControlPointYaw(const Eigen::MatrixXd &q, int id) const
   {
+    // 论文式 (2)：用 Q_(i+1)-Q_(i-1) 的 XY 分量算 atan2；边界截断索引，方向退化时回退零朝向。
     if (q.cols() <= 1)
       return 0.0;
 
@@ -44,16 +86,20 @@ namespace scan_planner
     return estimateSegmentYaw(q.col(prev_id), q.col(next_id));
   }
 
+  /// @brief 更新待优化的控制点矩阵；矩阵列对应控制点，三行对应世界系 XYZ。
   void BsplineOptimizer::setControlPoints(const Eigen::MatrixXd &points)
   {
     cps_.points = points;
   }
 
+  /// @brief 保存样条时间间隔，单位 s；有限差分速度、加速度和轨迹重建依赖此值。
   void BsplineOptimizer::setBsplineInterval(const double &ts) { bspline_interval_ = ts; }
 
   /* This function is very similar to check_collision_and_rebound(). 
    * It was written separately, just because I did it once and it has been running stably since March 2020.
    * But I will merge then someday.*/
+  /// @brief 检测初始轨迹的碰撞段，调用 A* 绕行并为相关控制点构造避障基点与方向。
+  /// 搜索失败时返回已积累路径；调用方仍需结合后续优化及碰撞检查判断整次规划是否成功。
   std::vector<std::vector<Eigen::Vector3d>> BsplineOptimizer::initControlPoints(Eigen::MatrixXd &init_points, bool flag_first_init /*= true*/)
   {
 
@@ -363,6 +409,7 @@ namespace scan_planner
     return a_star_paths;
   }
 
+  /// @brief L-BFGS 提前终止回调；根据 force_stop_type_ 中断当前求解，以便重建碰撞引导或处理错误。
   int BsplineOptimizer::earlyExit(void *func_data, const double *x, const double *g, const double fx, const double xnorm, const double gnorm, const double step, int n, int k, int ls)
   {
     BsplineOptimizer *opt = reinterpret_cast<BsplineOptimizer *>(func_data);
@@ -371,6 +418,7 @@ namespace scan_planner
     return (opt->force_stop_type_ == STOP_FOR_ERROR || opt->force_stop_type_ == STOP_FOR_REBOUND);
   }
 
+  /// @brief L-BFGS 的静态适配入口，通过 func_data 恢复实例并计算 Rebound 代价和梯度。
   double BsplineOptimizer::costFunctionRebound(void *func_data, const double *x, double *grad, const int n)
   {
     BsplineOptimizer *opt = reinterpret_cast<BsplineOptimizer *>(func_data);
@@ -382,6 +430,7 @@ namespace scan_planner
     return cost;
   }
 
+  /// @brief L-BFGS 的 Refine 适配入口，输出标量目标和与变量排列一致的梯度。
   double BsplineOptimizer::costFunctionRefine(void *func_data, const double *x, double *grad, const int n)
   {
     BsplineOptimizer *opt = reinterpret_cast<BsplineOptimizer *>(func_data);
@@ -393,6 +442,8 @@ namespace scan_planner
     return cost;
   }
 
+  /// @brief 沿已构造方向计算控制点相对基点的投影距离，间距不足时累加分段软惩罚。
+  /// 这里不是查询 ESDF 的欧氏距离；迭代过程中可能检测新碰撞并要求重建引导。
   void BsplineOptimizer::calcDistanceCostRebound(const Eigen::MatrixXd &q, double &cost,
                                                  Eigen::MatrixXd &gradient, int iter_num, double smoothness_cost)
   {
@@ -412,7 +463,9 @@ namespace scan_planner
     {
       for (size_t j = 0; j < cps_.direction[i].size(); ++j)
       {
+        // 论文式 (9)：Q_i 对应当前控制点，a_ij 对应 base_point，v_ij 对应单位 direction；这是沿推离方向的投影距离。
         double dist = (cps_.points.col(i) - cps_.base_point[i][j]).dot(cps_.direction[i][j]);
+        // 论文式 (10)：c_ij=s_f-d_ij；下方按区间累加 rho(c_ij)，安全余量已满足时该项不再惩罚。
         double dist_err = cps_.clearance - dist;
         Eigen::Vector3d dist_grad = cps_.direction[i][j];
 
@@ -423,6 +476,7 @@ namespace scan_planner
         else if (dist_err < demarcation)
         {
           cost += pow(dist_err, 3);
+          // 论文式 (11)：这里 rho'(c)=3*c²，故控制点梯度为 -rho'(c)*v；下一分支使用另一段 rho 的导数。
           gradient.col(i) += -3.0 * dist_err * dist_err * dist_grad;
         }
         else
@@ -434,6 +488,7 @@ namespace scan_planner
     }
   }
 
+  /// @brief Refine 的参考贴合项，分别处理沿参考切向和偏离切向的误差，以保留原轨迹形状。
   void BsplineOptimizer::calcFitnessCost(const Eigen::MatrixXd &q, double &cost, Eigen::MatrixXd &gradient)
   {
 
@@ -464,6 +519,8 @@ namespace scan_planner
     }
   }
 
+  /// @brief 默认用控制点三阶差分平方和衡量平滑性；可选分支改用二阶差分。
+  /// 这是离散控制点代价，不能直接当成已施加了 max_jerk_ 硬限值。
   void BsplineOptimizer::calcSmoothnessCost(const Eigen::MatrixXd &q, double &cost,
                                             Eigen::MatrixXd &gradient, bool falg_use_jerk /* = true*/)
   {
@@ -477,6 +534,7 @@ namespace scan_planner
       for (int i = 0; i < q.cols() - 3; i++)
       {
         /* evaluate jerk */
+        // 论文式 (12)：累加三阶控制点差分平方；此处省略式 (1) 的 Δt^-3，因此数值上不等于物理 jerk 平方和。
         jerk = q.col(i + 3) - 3 * q.col(i + 2) + 3 * q.col(i + 1) - q.col(i);
         cost += jerk.squaredNorm();
         temp_j = 2.0 * jerk;
@@ -505,9 +563,11 @@ namespace scan_planner
     }
   }
 
+  /// @brief 用控制点有限差分估计各轴速度和加速度，对超出名义阈值的部分计算代价及解析梯度。
   void BsplineOptimizer::calcFeasibilityCost(const Eigen::MatrixXd &q, double &cost,
                                              Eigen::MatrixXd &gradient)
   {
+    // 论文式 (13)：对应速度/加速度超限代价；当前实现逐轴惩罚，默认分支速度项还乘 Δt^-2，区别于论文的向量范数写法。
 
     //#define SECOND_DERIVATIVE_CONTINOUS
 
@@ -709,6 +769,8 @@ namespace scan_planner
 #endif
   }
 
+  /// @brief 在求解中发现新的有效碰撞段，重新搜索绕行路径并更新避障约束方向。
+  /// 失败段可能被合并或丢弃，停止标志和最终轨迹检查共同决定后续行为。
   bool BsplineOptimizer::check_collision_and_rebound(void)
   {
 
@@ -927,6 +989,7 @@ namespace scan_planner
     return false;
   }
 
+  /// @brief 设置本次控制点与时间间隔，执行 Rebound，并将结果通过 optimal_points 返回。
   bool BsplineOptimizer::BsplineOptimizeTrajRebound(Eigen::MatrixXd &optimal_points, double ts)
   {
     setBsplineInterval(ts);
@@ -938,6 +1001,7 @@ namespace scan_planner
     return flag_success;
   }
 
+  /// @brief 设置初始控制点和时间间隔，按 ref_pts_ 优化并返回精修结果。
   bool BsplineOptimizer::BsplineOptimizeTrajRefine(const Eigen::MatrixXd &init_points, const double ts, Eigen::MatrixXd &optimal_points)
   {
 
@@ -951,6 +1015,8 @@ namespace scan_planner
     return flag_success;
   }
 
+  /// @brief 固定边界控制点，调用 L-BFGS，再对轨迹近端部分进行地图碰撞采样。
+  /// 仍有碰撞时增大避障权重并重试；求解器收敛状态只是其中一个判断条件。
   bool BsplineOptimizer::rebound_optimize()
   {
     iter_num_ = 0;
@@ -1058,6 +1124,7 @@ namespace scan_planner
     return success;
   }
 
+  /// @brief 按时间重分配后的参考采样点求解精修轨迹，并重新检查近端地图占用。
   bool BsplineOptimizer::refine_optimize()
   {
     iter_num_ = 0;
@@ -1130,6 +1197,10 @@ namespace scan_planner
     return flag_safe;
   }
 
+  /// @brief 解包优化变量，累加平滑、避障、可行性代价及梯度；保持边界控制点不在变量段内。
+  /// z 行梯度显式置零，随后按 Eigen 的列主序布局复制回求解器梯度数组。
+  // 这是轨迹规划层的目标：调整 B 样条控制点坐标，输出一条局部参考轨迹；参数 x 是控制点展开数组，不是 MPC 状态 x_k。
+  // 有加权目标、前视范围和滚动更新并不足以称为 MPC；本处未按机器狗动力学预测状态并优化一串机身/电机控制输入。
   void BsplineOptimizer::combineCostRebound(const double *x, double *grad, double &f_combine, const int n)
   {
 
@@ -1146,15 +1217,18 @@ namespace scan_planner
     calcDistanceCostRebound(cps_.points, f_distance, g_distance, iter_num_, f_smoothness);
     calcFeasibilityCost(cps_.points, f_feasibility, g_feasibility);
 
+    // 论文式 (6)：lambda_s=lambda1_、lambda_c=new_lambda2_、lambda_f=lambda3_；此处只组合 Rebound 三项。
     f_combine = lambda1_ * f_smoothness + new_lambda2_ * f_distance + lambda3_ * f_feasibility;
     //printf("origin %f %f %f %f\n", f_smoothness, f_distance, f_feasibility, f_combine);
 
     Eigen::MatrixXd grad_3D = lambda1_ * g_smoothness + new_lambda2_ * g_distance +
                               lambda3_ * g_feasibility;
+    // 保持参考高度：z 不参与该阶段梯度更新；已有竖直可行性问题也不能靠水平优化任意绕开。
     grad_3D.row(2).setZero();
     memcpy(grad, grad_3D.data() + 3 * order_, n * sizeof(grad[0]));
   }
 
+  /// @brief 组合平滑、参考贴合、可行性代价，输出 Refine 梯度；同样保持 z 方向不更新。
   void BsplineOptimizer::combineCostRefine(const double *x, double *grad, double &f_combine, const int n)
   {
 
@@ -1179,6 +1253,7 @@ namespace scan_planner
 
     Eigen::MatrixXd grad_3D = lambda1_ * g_smoothness + lambda4_ * g_fitness +
                               lambda3_ * g_feasibility;
+    // Refine 同样固定 z 梯度，维持与 Rebound 阶段一致的高度处理约定。
     grad_3D.row(2).setZero();
     memcpy(grad, grad_3D.data() + 3 * order_, n * sizeof(grad[0]));
   }

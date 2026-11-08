@@ -1,3 +1,22 @@
 <launch>
-  <node name="scanplanner_rviz" pkg="rviz" type="rviz" args="-d $(find scan_planner)/launch/default.rviz" required="true" />
+  <!--
+    RViz 可视化入口：roslaunch scan_planner rviz.launch。
+    此文件启动 RViz；地图、机器人状态和规划轨迹由 run.launch 启动的其他节点提供。
+
+    name：运行时的 ROS 节点名，此处为 /scanplanner_rviz。
+    pkg：可执行文件所在的 ROS 包，此处为系统安装的 rviz 包。
+    type：该包中的可执行文件名，此处运行 rviz 程序。
+    args：传给程序的命令行参数。-d 指定 RViz 显示配置文件；
+          $(find scan_planner) 展开为 scan_planner 包的目录，再拼接 launch/default.rviz。
+          配置文件保存显示话题、固定坐标系、视角、2D Nav Goal 工具等设置。
+    required：为 true 时，该节点退出会结束本次 rviz.launch 启动任务；
+              在另一个终端单独启动的 run.launch 不属于本次启动任务。
+  -->
+  <node
+    name="scanplanner_rviz"
+    pkg="rviz"
+    type="rviz"
+    args="-d $(find scan_planner)/launch/default.rviz"
+    required="true"
+  />
 </launch>

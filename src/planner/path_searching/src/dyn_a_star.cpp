@@ -1,3 +1,7 @@
+/// @file
+/// 为局部轨迹碰撞段提供绕行引导的 A*，由 BsplineOptimizer 调用，不是独立节点。
+/// 搜索池索引映射到起终点附近的世界位置；每轮通过 rounds_ 区分复用节点。
+/// 当前只枚举 XY 邻居，z 由起终点参考关系计算；状态不含时间，不能从文件名推断时空动态规划。
 #include "path_searching/dyn_a_star.h"
 #include <algorithm>
 #include <cmath>
@@ -13,6 +17,7 @@ AStar::~AStar()
                 delete GridNodeMap_[i][j][k];
 }
 
+/// @brief 保存地图并分配固定节点池；池尺寸是搜索容量，与 GridMap 的完整窗口尺寸不同。
 void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size)
 {
     POOL_SIZE_ = pool_size;
@@ -35,6 +40,7 @@ void AStar::initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size)
     grid_map_ = occ_map;
 }
 
+/// @brief 按三轴索引差构造对角距离启发项，由 getHeu() 乘轻微 tie-breaker 后使用。
 double AStar::getDiagHeu(GridNodePtr node1, GridNodePtr node2)
 {
     double dx = abs(node1->index(0) - node2->index(0));
@@ -62,6 +68,7 @@ double AStar::getDiagHeu(GridNodePtr node1, GridNodePtr node2)
     return h;
 }
 
+/// @brief 备用曼哈顿启发项；是否参与当前搜索取决于头文件 getHeu() 的选择。
 double AStar::getManhHeu(GridNodePtr node1, GridNodePtr node2)
 {
     double dx = abs(node1->index(0) - node2->index(0));
@@ -71,11 +78,13 @@ double AStar::getManhHeu(GridNodePtr node1, GridNodePtr node2)
     return dx + dy + dz;
 }
 
+/// @brief 备用欧氏启发项，距离在搜索索引尺度计算。
 double AStar::getEuclHeu(GridNodePtr node1, GridNodePtr node2)
 {
     return (node2->index - node1->index).norm();
 }
 
+/// @brief 沿 cameFrom 从终点回溯搜索节点，并整理为路径顺序。
 vector<GridNodePtr> AStar::retrievePath(GridNodePtr current)
 {
     vector<GridNodePtr> path;
@@ -90,6 +99,7 @@ vector<GridNodePtr> AStar::retrievePath(GridNodePtr current)
     return path;
 }
 
+/// @brief 转换起终点至池索引，并按方向相关膨胀占用尝试调整不可用端点；失败由调用者上报 INIT_ERR。
 bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d end_pt, Vector3i &start_idx, Vector3i &end_idx)
 {
     if (!Coord2Index(start_pt, start_idx) || !Coord2Index(end_pt, end_idx))
@@ -142,6 +152,8 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
     return true;
 }
 
+/// @brief 执行 A* 并返回 SUCCESS、INIT_ERR 或 SEARCH_ERR；设置步长、中心与新轮次后开始扩展。
+/// 邻居 yaw 来自 XY 扩展方向；搜索耗时超过 0.2 s 或开放集耗尽会失败，调用方负责恢复。
 ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_pt)
 {
     ros::Time time_1 = ros::Time::now();
@@ -164,15 +176,18 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
     const Eigen::Vector2d search_xy_delta = search_end.head<2>() - search_start_xy;
     const double search_xy_len2 = search_xy_delta.squaredNorm();
 
+    // 当前每个 XY 候选的高度由起终点参考投影插值，不额外枚举 dz，因此不是自由的 26 邻域三维搜索。
     auto interpolateZIndexOnSearchPlane = [&](const int x_idx, const int y_idx) -> int {
         if (search_xy_len2 < 1e-8)
             return start_idx(2);
 
         Eigen::Vector3i sample_idx(x_idx, y_idx, start_idx(2));
         const Eigen::Vector2d sample_xy = Index2Coord(sample_idx).head<2>();
+        // 论文式 (14)：水平点投影到起终点连线得到 beta，再截到 [0,1]；这里的起终点已做网格转换/占用调整。
         double ratio = (sample_xy - search_start_xy).dot(search_xy_delta) / search_xy_len2;
         ratio = std::max(0.0, std::min(1.0, ratio));
 
+        // 论文式 (15)：按 beta 插值搜索高度，随后转成离散 Z 索引；不另行自由枚举 dz。
         const double z = search_start(2) + ratio * (search_end(2) - search_start(2));
         return static_cast<int>((z - center_(2)) * inv_step_size_ + 0.5) + CENTER_IDX_(2);
     };
@@ -277,6 +292,7 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
                 }
             }
         ros::Time time_2 = ros::Time::now();
+        // 本轮耗时限制，单位 s；其余 SEARCH_ERR 还可能来自开放集耗尽，需结合日志和返回码区分。
         if ((time_2 - time_1).toSec() > 0.2)
         {
             ROS_WARN("Failed in A star path searching !!! 0.2 seconds time limit exceeded.");
@@ -292,6 +308,7 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
     return ASTAR_RET::SEARCH_ERR;
 }
 
+/// @brief 将本轮保存的节点索引转换为世界坐标点；仅应在搜索成功后使用其路径结果。
 vector<Vector3d> AStar::getPath()
 {
     vector<Vector3d> path;

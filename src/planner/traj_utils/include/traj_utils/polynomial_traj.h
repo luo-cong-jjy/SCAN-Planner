@@ -1,3 +1,6 @@
+/// @file
+/// 分段多项式轨迹容器：每轴系数按降幂存放，times 保存每段时长。
+/// 使用前应 addSegment() 再 init()；求值函数通过累减段时长定位局部时间，调用者须保证有效范围。
 #ifndef _POLYNOMIAL_TRAJ_H
 #define _POLYNOMIAL_TRAJ_H
 
@@ -29,17 +32,20 @@ public:
   {
   }
 
+  /// @brief 清空段和累计信息，以便重新构造参考轨迹。
   void reset()
   {
     times.clear(), cxs.clear(), cys.clear(), czs.clear();
     time_sum = 0.0, num_seg = 0;
   }
 
+  /// @brief 追加一段三轴系数和时长；不在此同步更新累计时长，完成后须调用 init()。
   void addSegment(vector<double> cx, vector<double> cy, vector<double> cz, double t)
   {
     cxs.push_back(cx), cys.push_back(cy), czs.push_back(cz), times.push_back(t);
   }
 
+  /// @brief 按当前所有分段重算段数和总时长，供求值、进度和重规划使用。
   void init()
   {
     num_seg = times.size();
@@ -73,6 +79,7 @@ public:
     return empty;
   }
 
+  /// @brief 用各段局部时间构造幂次向量并对 XYZ 求值；t 不能超出已初始化轨迹的可用区间。
   Eigen::Vector3d evaluate(double t)
   {
     /* detetrmine segment num */
@@ -97,6 +104,7 @@ public:
     return pt;
   }
 
+  /// @brief 对所选段系数求一阶导数，返回世界系速度。
   Eigen::Vector3d evaluateVel(double t)
   {
     /* detetrmine segment num */
@@ -128,6 +136,7 @@ public:
     return vel;
   }
 
+  /// @brief 对所选段系数求二阶导数，返回世界系加速度。
   Eigen::Vector3d evaluateAcc(double t)
   {
     /* detetrmine segment num */
