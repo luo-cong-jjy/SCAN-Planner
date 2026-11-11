@@ -141,8 +141,11 @@ namespace scan_planner
     bspline_optimizer_rebound_->setParam(nh);
     bspline_optimizer_rebound_->setEnvironment(grid_map_);
     // 创建优化器使用的 A* 搜索器，为碰撞区段寻找绕障引导路径。
+    // 此处配置优化器公开的共享指针成员，不在 Manager 中另存一份 AStar 所有权；共享类型不代表实际已多方持有。
     bspline_optimizer_rebound_->a_star_.reset(new AStar);
     // 共用同一份地图，分配 100×100×100 个搜索节点的复用池；这是节点数量，不是 100 m 的地图尺寸。
+    // 这里只确定容量；每次 AstarSearch 再设置步长和起终点中点。起终点不是此搜索盒子的最小/最大角。
+    // 默认步长取地图分辨率 0.05 m，池每轴名义尺度约 5 m；三维池不代表当前算法自由枚举三维邻居。
     bspline_optimizer_rebound_->a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
 
     visualization_ = vis; // 保存 FSM 传入的可视化对象，供管理器显示候选、A* 引导和优化后的轨迹。
@@ -624,6 +627,8 @@ namespace scan_planner
 
     // insert intermediate points if too far
     // 在起终点连线上插入几何中间点，控制单段跨度；这里只做线性插值，不读取障碍，因此不是在搜索绕障关键点。
+    // 该参考生成不替代全局 A*；需要全局绕行时可另接上层路线搜索，不能因多项式光滑就声称已经全局避障。
+    // 面试辨析：全局参考生成与地图路线搜索分工不同，见 docs/面试/算法原理与面试问题.md#全局搜索与多项式参考。
     vector<Eigen::Vector3d> inter_points;
     const double dist_thresh = 4.0;
 

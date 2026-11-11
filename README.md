@@ -149,6 +149,20 @@ The `use_gpu` option in [`simulator.xml`](src/planner/plan_manage/launch/simulat
 - [结合论文沿启动树继续阅读](#scan-study-paper)
 - [论文全部 15 个公式与源码逐项对照](docs/paper_formula_code_map.md)
 - [结合本项目系统学习 C++：路线与独立练习](docs/cpp_study_guide.md)
+- [面试复习手册：算法完整链路与深入问题](docs/面试/算法原理与面试问题.md#a00-复习入口)
+- [面试复习手册：C++知识体系与可运行示例](docs/面试/C++相关知识.md#c00-复习导航)
+
+### 面试复习入口（2026-11-11）
+
+笔记仅维护 [算法原理与面试问题](docs/面试/算法原理与面试问题.md) 和 [C++相关知识](docs/面试/C++相关知识.md) 两份 Markdown。现已按面试复习重排首页：算法手册覆盖完整链路、目标函数/梯度、L-BFGS、时间精修、跟踪、论文差异和 50 道深入问题；C++ 手册覆盖语言/资源/容器/模板/回调/并发/Eigen/构建，并有 55 道速答题和可运行示例。
+
+算法详细讲解新增 [多项式参考与随机初值](docs/面试/算法原理与面试问题.md#a10-多项式参考与局部初始化的详细原理)、[投影A星](docs/面试/算法原理与面试问题.md#a11-a星搜索的详细原理与本项目适配)、[B样条从表示到优化](docs/面试/算法原理与面试问题.md#a12-b样条从表示到优化的详细原理)，以及 [DWA/DWB、TEB、MPC等方案的选型对比](docs/面试/算法原理与面试问题.md#a13-为什么采用这条链路而不是dwa等方案) 和 25 道针对性追问。比较当前方法与 DWA 时以完整局部规划链路为对象，不把引导 A* 直接当成速度控制器。
+
+[碰撞检测方法与效率分析](docs/面试/算法原理与面试问题.md#a15-碰撞检测方法与效率分析) 进一步串起占用融合、膨胀维护、双圆柱查表、各阶段轨迹检查，区分查询与更新开销，列出默认内存估算、离散检测局限及性能测量方法。
+
+时间紧时先看算法的 [项目口述](docs/面试/算法原理与面试问题.md#a01-项目口述与架构) 和 [问题库](docs/面试/算法原理与面试问题.md#a08-深入问题库)，C++ 从 [复习导航](docs/面试/C++相关知识.md#c00-复习导航) 进入。原有逐行问答、数学例子、阅读历史和文件覆盖清单保留为附录，按需查证，不再要求先逐行读完项目。笔记可在 Obsidian 中打开，独立 `.cpp` 示例保留在 `docs/面试/示例/`。
+
+本次面试的四道原题（A* 改造、碰撞检测、全局搜索与参考的分工、多项式原理）见 [算法追问索引](docs/面试/算法原理与面试问题.md#算法追问索引)。下面保留上一轮书签作为历史记录，本轮断点以上述新进度为准。
 
 <a id="scan-study-bookmark"></a>
 ### 阅读进度书签（2026-11-05）
@@ -160,9 +174,9 @@ The `use_gpu` option in [`simulator.xml`](src/planner/plan_manage/launch/simulat
 | 顺序 | 阅读位置 | 进度或下一步 |
 |---|---|---|
 | 已经过 | launch → scan_planner_node.cpp → scan_replan_fsm.h/.cpp | 节点、状态机和回调已有较详细讲解；后续需要时回查 |
-| 上一文件 | [planner_manager.cpp](src/planner/plan_manage/src/planner_manager.cpp#L758) 的 reparamBspline() | 已解释拉伸时间后重采样和重新求控制点的用途 |
-| 当前断点 | [polynomial_traj.cpp 的 R 构造](src/planner/traj_utils/src/polynomial_traj.cpp#L201) | 当前重点为 transpose().inverse()、block()/segment() 等库接口 |
-| 先继续 | minSnapTraj() 的 Pos/Time、每段六项端点状态、A 映射；可对照 [one_segment_traj_gen()](src/planner/traj_utils/src/polynomial_traj.cpp#L283) 的单段方程 | 先抓住“给定边界状态求系数”，再逐块展开 Ct、Q、R |
+| 上一文件 | [planner_manager.cpp](src/planner/plan_manage/src/planner_manager.cpp#L763) 的 reparamBspline() | 已解释拉伸时间后重采样和重新求控制点的用途 |
+| 当前断点 | [polynomial_traj.cpp 的 R 构造](src/planner/traj_utils/src/polynomial_traj.cpp#L202) | 当前重点为 transpose().inverse()、block()/segment() 等库接口 |
+| 先继续 | minSnapTraj() 的 Pos/Time、每段六项端点状态、A 映射；可对照 [one_segment_traj_gen()](src/planner/traj_utils/src/polynomial_traj.cpp#L285) 的单段方程 | 先抓住“给定边界状态求系数”，再逐块展开 Ct、Q、R |
 | 随用随查 | [plan_container.hpp](src/planner/plan_manage/include/plan_manage/plan_container.hpp) | 已查过部分字段，作为数据组织索引；未确认整份逐行读完 |
 
 这是一份依据提问记录的书签。后续按当前函数和最新问题更新断点；增加注释后行号可能变化。继续沿原启动树阅读，C++ 练习文档保留为查阅资料。
@@ -684,6 +698,9 @@ scan_planner_node 进程内部的 GridMap                ← [库] plan_env
 
 本项目需要在长距离导航中持续检查机身与附近三维障碍的碰撞，同时保留较细的体素分辨率。固定尺寸的滑动地图让存储规模由“窗口大小与分辨率”决定，而不是随走过的整片环境一直增长；全局参考或上层粗路线提供远处方向，精细窗口服务于当前局部搜索、轨迹优化和安全检查。对应论文第 5 页 V-A、Fig. 5。
 
+面试中可以概括为：
+使用固定尺寸的三维滑动地图，在机器人附近保持高分辨率碰撞表示，通过保留重叠区域、复用移出区域的内存，支持长距离移动中的实时局部规划。窗口大小体现资源开销与局部绕行范围之间的折中。
+
 体素数量约为 `ceil(Lx/r) × ceil(Ly/r) × ceil(Lz/r)`。以当前 0.05 m 分辨率比较：
 
 | 假设存为稠密体素图的范围 | 体素数量 | 仅一个 double 占用数组 |
@@ -1041,20 +1058,20 @@ rostopic hz /pcl_render_node/cloud
 | 公式 | 含义 | 关键代码入口 | 实现关系 |
 |---|---|---|---|
 | [(1)](docs/paper_formula_code_map.md#eq-1) | 速度、加速度、jerk 控制点 | [uniform_bspline.cpp:113](src/planner/bspline_opt/src/uniform_bspline.cpp#L113)；`getDerivativeControlPoints()/getDerivative()` | 均匀节点下化简对应 |
-| [(2)](docs/paper_formula_code_map.md#eq-2) | 控制点切向诱导 yaw | [bspline_optimizer.cpp:80](src/planner/bspline_opt/src/bspline_optimizer.cpp#L80)；`estimateControlPointYaw()/estimateSegmentYaw()` | 增加边界及退化处理 |
-| [(3)](docs/paper_formula_code_map.md#eq-3) | 机身系的两个圆柱中心 | [grid_map.h:446](src/planner/plan_env/include/plan_env/grid_map.h#L446)；`getInflateOccupancy(pos,yaw)` | 隐含在正负 offset 中 |
-| [(4)](docs/paper_formula_code_map.md#eq-4) | 圆柱中心到世界系的变换 | [grid_map.h:450](src/planner/plan_env/include/plan_env/grid_map.h#L450)；`getInflateOccupancy(pos,yaw)` | 矩阵乘法化简为正负 heading 偏移 |
-| [(5)](docs/paper_formula_code_map.md#eq-5) | 两中心占用取 max | [grid_map.h:454](src/planner/plan_env/include/plan_env/grid_map.h#L454)；`getInflateOccupancy()/getInflateOccupancyFromBuffer()` | 地图内二值等价，另有越界 -1 |
-| [(6)](docs/paper_formula_code_map.md#eq-6) | 三项加权总目标 | [bspline_optimizer.cpp:1220](src/planner/bspline_opt/src/bspline_optimizer.cpp#L1220)；`combineCostRebound()/rebound_optimize()` | 三项对应，实际更新另抑制 Z 梯度 |
+| [(2)](docs/paper_formula_code_map.md#eq-2) | 控制点切向诱导 yaw | [bspline_optimizer.cpp:85](src/planner/bspline_opt/src/bspline_optimizer.cpp#L85)；`estimateControlPointYaw()/estimateSegmentYaw()` | 增加边界及退化处理 |
+| [(3)](docs/paper_formula_code_map.md#eq-3) | 机身系的两个圆柱中心 | [grid_map.h:449](src/planner/plan_env/include/plan_env/grid_map.h#L449)；`getInflateOccupancy(pos,yaw)` | 隐含在正负 offset 中 |
+| [(4)](docs/paper_formula_code_map.md#eq-4) | 圆柱中心到世界系的变换 | [grid_map.h:453](src/planner/plan_env/include/plan_env/grid_map.h#L453)；`getInflateOccupancy(pos,yaw)` | 矩阵乘法化简为正负 heading 偏移 |
+| [(5)](docs/paper_formula_code_map.md#eq-5) | 两中心占用取 max | [grid_map.h:457](src/planner/plan_env/include/plan_env/grid_map.h#L457)；`getInflateOccupancy()/getInflateOccupancyFromBuffer()` | 地图内二值等价，另有越界 -1 |
+| [(6)](docs/paper_formula_code_map.md#eq-6) | 三项加权总目标 | [bspline_optimizer.cpp:1226](src/planner/bspline_opt/src/bspline_optimizer.cpp#L1226)；`combineCostRebound()/rebound_optimize()` | 三项对应，实际更新另抑制 Z 梯度 |
 | [(7)](docs/paper_formula_code_map.md#eq-7) | 水平累计弧长 | [planner_manager.cpp:41](src/planner/plan_manage/src/planner_manager.cpp#L41)；`applyLinearZReference()` | 直接对应候选采样点累计长度 |
 | [(8)](docs/paper_formula_code_map.md#eq-8) | 按水平进度插值高度 | [planner_manager.cpp:57](src/planner/plan_manage/src/planner_manager.cpp#L57)；`applyLinearZReference()` | 增加近零阈值及空/单点处理 |
-| [(9)](docs/paper_formula_code_map.md#eq-9) | 障碍投影距离 | [bspline_optimizer.cpp:466](src/planner/bspline_opt/src/bspline_optimizer.cpp#L466)；`calcDistanceCostRebound()` | 直接对应基点差与方向的点积 |
-| [(10)](docs/paper_formula_code_map.md#eq-10) | 碰撞惩罚累加 | [bspline_optimizer.cpp:468](src/planner/bspline_opt/src/bspline_optimizer.cpp#L468)；`calcDistanceCostRebound()` | 代码给出 rho 的具体分段式 |
-| [(11)](docs/paper_formula_code_map.md#eq-11) | 碰撞惩罚梯度 | [bspline_optimizer.cpp:479](src/planner/bspline_opt/src/bspline_optimizer.cpp#L479)；`calcDistanceCostRebound()` | 对应不同区间的 rho 导数 |
-| [(12)](docs/paper_formula_code_map.md#eq-12) | jerk 平滑项 | [bspline_optimizer.cpp:537](src/planner/bspline_opt/src/bspline_optimizer.cpp#L537)；`calcSmoothnessCost()` | 使用三阶差分，省略时间缩放 |
-| [(13)](docs/paper_formula_code_map.md#eq-13) | 速度、加速度超限惩罚 | [bspline_optimizer.cpp:570](src/planner/bspline_opt/src/bspline_optimizer.cpp#L570)；`calcFeasibilityCost()` | 逐轴实现，速度项另乘时间缩放 |
-| [(14)](docs/paper_formula_code_map.md#eq-14) | A* 水平位置的投影比例 | [dyn_a_star.cpp:186](src/planner/path_searching/src/dyn_a_star.cpp#L186)；`AstarSearch() 内 interpolateZIndexOnSearchPlane` | 投影比例及区间截断对应 |
-| [(15)](docs/paper_formula_code_map.md#eq-15) | A* 搜索面的高度插值 | [dyn_a_star.cpp:190](src/planner/path_searching/src/dyn_a_star.cpp#L190)；`同一高度投影辅助函数` | 高度插值后转离散 Z 索引 |
+| [(9)](docs/paper_formula_code_map.md#eq-9) | 障碍投影距离 | [bspline_optimizer.cpp:472](src/planner/bspline_opt/src/bspline_optimizer.cpp#L472)；`calcDistanceCostRebound()` | 直接对应基点差与方向的点积 |
+| [(10)](docs/paper_formula_code_map.md#eq-10) | 碰撞惩罚累加 | [bspline_optimizer.cpp:474](src/planner/bspline_opt/src/bspline_optimizer.cpp#L474)；`calcDistanceCostRebound()` | 代码给出 rho 的具体分段式 |
+| [(11)](docs/paper_formula_code_map.md#eq-11) | 碰撞惩罚梯度 | [bspline_optimizer.cpp:485](src/planner/bspline_opt/src/bspline_optimizer.cpp#L485)；`calcDistanceCostRebound()` | 对应不同区间的 rho 导数 |
+| [(12)](docs/paper_formula_code_map.md#eq-12) | jerk 平滑项 | [bspline_optimizer.cpp:543](src/planner/bspline_opt/src/bspline_optimizer.cpp#L543)；`calcSmoothnessCost()` | 使用三阶差分，省略时间缩放 |
+| [(13)](docs/paper_formula_code_map.md#eq-13) | 速度、加速度超限惩罚 | [bspline_optimizer.cpp:576](src/planner/bspline_opt/src/bspline_optimizer.cpp#L576)；`calcFeasibilityCost()` | 逐轴实现，速度项另乘时间缩放 |
+| [(14)](docs/paper_formula_code_map.md#eq-14) | A* 水平位置的投影比例 | [dyn_a_star.cpp:190](src/planner/path_searching/src/dyn_a_star.cpp#L190)；`AstarSearch() 内 interpolateZIndexOnSearchPlane` | 投影比例及区间截断对应 |
+| [(15)](docs/paper_formula_code_map.md#eq-15) | A* 搜索面的高度插值 | [dyn_a_star.cpp:194](src/planner/path_searching/src/dyn_a_star.cpp#L194)；`同一高度投影辅助函数` | 高度插值后转离散 Z 索引 |
 
 式 (12) 的时间尺度、式 (13) 的逐轴惩罚、式 (5) 的越界语义需要单独理解，不能将这些实现直接记为与论文数值完全相同。正文未编号的时长、投影算子、控制点范围，以及没有编号公式的滑动地图/死胡同恢复，也在完整对照文档中注明。
 

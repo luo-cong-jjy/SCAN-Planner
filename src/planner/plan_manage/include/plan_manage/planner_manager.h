@@ -25,6 +25,7 @@ namespace scan_planner
     // SECTION stable
   public:
     // 无参构造函数声明，定义见 planner_manager.cpp；只构造管理器对象，算法模块由 initPlanModules() 建立。
+    // 当前构造函数不接收 nh；调用方在随后 initPlanModules(nh, vis) 中传入句柄并完成业务配置。
     SCANPlannerManager();
     // 析构函数声明，定义在 cpp；管理器销毁后，其地图、优化器和显示入口等成员释放各自所有权。
     ~SCANPlannerManager();
@@ -62,6 +63,8 @@ namespace scan_planner
     PlanningVisualization::Ptr visualization_;
 
     // 局部样条优化入口，初始化时接入同一 GridMap 和 A*，执行 Rebound/Refine。
+    // 此优化器由当前 Manager 创建、复用并负责释放，未交给其他模块共同持有，因此采用独占所有权。
+    // 优化器内部共享地图不等于优化器自身也要共享；Manager 析构/reset 时自动结束它的生命周期。
     BsplineOptimizer::Ptr bspline_optimizer_rebound_;
 
     // 管理器局部规划连续失败计数，初始 0；各失败返回处递增，成功保存轨迹后清零，用于调节随机中间点扰动幅度。
@@ -82,9 +85,23 @@ namespace scan_planner
     // SECTION developing
 
   public:
-    // 给 std::unique_ptr<SCANPlannerManager> 起一个类内公开别名 Ptr；typedef 不会创建对象。
-    // 等价的现代写法是 using Ptr = std::unique_ptr<SCANPlannerManager>;。
-    // 外部使用 SCANPlannerManager::Ptr 声明独占智能指针；Ptr 名称是本项目约定，不是 C++ 关键字。
+    // Ptr 是 std::unique_ptr<SCANPlannerManager> 的公开类型别名，typedef 本身不创建指针或管理器对象。
+    // 等价写法：using Ptr = std::unique_ptr<SCANPlannerManager>;；Ptr 是项目命名约定，不是 C++ 关键字。
+    //
+    // 本项目为何独占：SCANReplanFSM 的 planner_manager_ 负责持有这一份管理器，当前不需要多个模块共同拥有它。
+    // 状态机通过管理器组织规划；管理器内部的地图/显示可以另行共享，不代表管理器本身也需要共享所有权。
+    // 与裸指针手动 new/delete 相比，独占指针用 RAII 明确释放责任，正常销毁或异常展开时自动清理所持对象。
+    //
+    // 使用过程：FSM 构造时 planner_manager_ 默认为空；init() 中 reset(new SCANPlannerManager) 才创建并接管对象。
+    // 随后的 initPlanModules(nh, visualization_) 再配置算法模块；“指针已接管对象”与“模块已配置”是两步。
+    // 访问有效对象用 planner_manager_->成员；空指针不可解引用，借用其 get() 返回值的代码不能自行 delete。
+    // reset() 清空当前指针并销毁原来独占的对象；reset(new ...) 先接管新对象并释放旧对象的所有权。
+    // 指针析构时由默认删除器 delete 所持对象，触发管理器析构及其成员的析构，各成员再释放自己的资源所有权。
+    //
+    // 独占语义：不能复制此指针；以 std::move 传入移动构造/赋值后，由接收方持有，源 unique_ptr 为空。
+    // 此类型不靠共享引用计数管理寿命；使用独占指针不妨碍其他代码在有效生命周期内借用对象。
+    // 这是当前可空、在 init 中创建的所有权设计，并非管理器只能用指针表示；按值成员也是另一种设计选择。
+    // 对照共享显示对象及示例：docs/面试/C++相关知识.md#智能指针与所有权。
     typedef unique_ptr<SCANPlannerManager> Ptr;
 
     // !SECTION

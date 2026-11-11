@@ -53,9 +53,14 @@ namespace scan_planner
     nh.param("optimization/max_acc", max_acc_, -1.0);
 
     // 参数读取：B 样条次数，默认 3；决定边界固定控制点数及优化变量区间。
+    // 此处 order 按次数 p 使用：三次不是三维，也不是只用 3 个控制点；普通节点区间由 4 个相邻控制点影响。
+    // 简单内部节点处三次样条具有 C² 连续性，即位置/速度/加速度连续；jerk 可分段变化，不保证跨节点连续。
+    // 相比一次/二次，它能保持加速度连续；相比更高次，局部支持和求值规模较小，是当前实现的平滑/计算折中。
+    // 注意这里只读取优化边界用的 order_；Manager/优化器构造、参数化矩阵和 Bspline 消息也有固定三次实现，不能只改此值切换五次。
+    // 原理、节点连续性和源码对照：docs/面试/算法原理与面试问题.md#为什么采用三次B样条。
     // 配置位置：私有 /scan_planner_node/optimization/order；当前主 launch 未覆盖此键，取下面的缺参
     // 回退。
-    // 缺参回退：3；只有参数服务器中没有该键时才使用。
+    // 读取失败回退：3；键缺失或不能按整数类型读取时使用。
     nh.param("optimization/order", order_, 3);
   }
 
@@ -176,6 +181,7 @@ namespace scan_planner
     {
       //cout << "in=" << in.transpose() << " out=" << out.transpose() << endl;
       Eigen::Vector3d in(init_points.col(segment_ids[i].first)), out(init_points.col(segment_ids[i].second));
+      // 只搜索当前候选碰撞段附近的绕行引导；它不承担整次导航任务的全局路线搜索，结果也不直接发给控制器。
       ASTAR_RET ret = a_star_->AstarSearch(grid_map_->getResolution(), in, out);
       if (ret == ASTAR_RET::SUCCESS)
       {

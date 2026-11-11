@@ -246,6 +246,7 @@ namespace scan_planner
     double global_time_offset; // This is because when the local traj finished and is going to switch back to the global traj, the global traj time is no longer matches the world time.
     // 当前局部轨迹保存时的 ROS 时刻；FSM/开环按 now-start_time_ 求执行时间，原地转向时 FSM 可后移它。
     // 闭环控制器接收消息后另用自己的 exec_time 推进，不直接以此值采样。
+    // ros::Time 默认构造为零，保存轨迹后才写入实际时刻；“轨迹相对时间从0开始”不等于此时间戳必须为0。
     ros::Time start_time_;
     // 位置样条在相对时间 0 的位置（世界系 m）；FSM 用它与当前轨迹采样位置比较普通重规划阈值。
     Eigen::Vector3d start_pos_;

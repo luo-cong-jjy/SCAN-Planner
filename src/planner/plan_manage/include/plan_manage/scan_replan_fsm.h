@@ -66,6 +66,7 @@ namespace scan_planner
 {
 
   // 接收任务并决定何时生成、重规划、执行或停止；不在本类中直接实现 A* 和数值优化。
+  // 状态跨回调保存在 exec_state_；事件与条件驱动迁移，详见 docs/面试/算法原理与面试问题.md#状态机基本原理与项目调度。
   class SCANReplanFSM
   {
 
@@ -101,9 +102,11 @@ namespace scan_planner
     };
 
     // 规划执行入口：init() 创建，用于生成全局参考、局部避障轨迹和停止轨迹，保存共享地图及轨迹结果。
+    // FSM 独占此管理器；指针成员默认空，init() 接管新对象后才可调用；其所有权不允许直接复制。
     SCANPlannerManager::Ptr planner_manager_;
 
     // 规划显示入口：init() 创建并传给管理器，显示目标、全局参考、初始轨迹、A* 引导和最优轨迹。
+    // FSM 与管理器共享同一显示对象；清空一份指针不代表对象立即销毁，需最后一个强所有者释放。
     PlanningVisualization::Ptr visualization_;
 
     // /planning/data_display 的发送缓存；当前执行回调主要更新时间戳，a~e 未填入业务统计。
@@ -119,6 +122,7 @@ namespace scan_planner
 
     // mode 2 的配置关键点，来自 YAML 的 fsm/waypointN_x/y/z，世界系 m；init() 加载。
     // 每个列表元素是一处 Eigen 三维点；列表首次构造为空，init() 先按点数 resize，再逐轴读取参数填入。
+    // 外层 std::vector 管理“有几个点”，内层 Eigen::Vector3d 规定“每点有 XYZ 三个 double”；不要把二者当成同一层。
     // 当前逐轴读取失败会保存 -1.0，未单独校验；真实负坐标也合法，不能用等于 -1 判定读取成败。
     std::vector<Eigen::Vector3d> preset_waypoints_;
 

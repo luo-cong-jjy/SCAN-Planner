@@ -239,6 +239,8 @@ void publishCameraPose(const nav_msgs::Odometry &body_odom)
 }
 
 /// @brief 由机身变换和雷达安装方向计算雷达位姿；与世界系输出点云配套使用。
+// rcvOdometryCallback() 接收机身位姿后调用此函数，结果发布到 quadTopic("lidar_pose")，默认 /quad_0/lidar_pose。
+// 当前模型未添加雷达安装平移，位置沿用机身，旋转为 R_world_body*Ry(lidar_pitch)；这不是另跑一套雷达定位算法。
 void publishLidarPose(const nav_msgs::Odometry &body_odom, const Eigen::Matrix4d &body2world)
 {
   const double theta = lidar_pitch * M_PI / 180.0;

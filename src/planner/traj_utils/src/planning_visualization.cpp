@@ -16,6 +16,7 @@ namespace scan_planner
   // 此时只建立发布接口；具体目标、路径等内容在后续 display*() 调用时才发送。
   PlanningVisualization::PlanningVisualization(ros::NodeHandle &nh)
   {
+    // 复制 ROS 句柄的管理状态；node 与调用方 nh 是不同句柄对象，复用节点资源，不是复制一个新 ROS 节点。
     node = nh;
 
     // 运行连接（输出入口）：私有规划目标 Marker，默认 /scan_planner_node/goal_point。

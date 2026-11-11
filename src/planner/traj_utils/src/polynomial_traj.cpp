@@ -52,6 +52,7 @@ PolynomialTraj PolynomialTraj::minSnapTraj(const Eigen::MatrixXd &Pos, const Eig
   // = 用右侧产生的对象初始化 Factorial；执行这条声明并不计算阶乘，后面 Factorial(i) 才执行 {} 中的代码。
   // const 禁止重新赋值该对象，不妨碍调用；static 使该对象在第一次执行到此声明时初始化，并跨调用保留。
   // 形如 [](int x)->int {...} 可显式写返回类型；本处由 return fac 推导为 int。变量初始化完成后须以 }; 结束声明。
+  // 捕获、mutable 和返回闭包的独立示例见 docs/面试/示例/03_lambda.cpp；static 不表示缓存每个阶乘结果。
   const static auto Factorial = [](int x) {
     int fac = 1;
     for (int i = x; i > 0; i--)
@@ -280,6 +281,7 @@ PolynomialTraj PolynomialTraj::minSnapTraj(const Eigen::MatrixXd &Pos, const Eig
 // 下方 C 是系数到边界状态的映射，Bx/By/Bz 是要求的边界状态；solve() 求系数，不查询地图或搜索障碍间路线。
 // t 为这一段的执行时长（s），不是当前采样时刻；给定正时长和首尾 p/v/a 后，每轴的六个系数由线性方程确定。
 // 此函数直接按 [c5,c4,c3,c2,c1,c0] 降幂求解，与上面多段函数内部的升幂排列不同。
+// 面试推导与零首尾导数手算例：docs/面试/算法原理与面试问题.md#多项式参考的数学原理。
 PolynomialTraj PolynomialTraj::one_segment_traj_gen(const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                                     const Eigen::Vector3d &end_pt, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc,
                                                     double t)

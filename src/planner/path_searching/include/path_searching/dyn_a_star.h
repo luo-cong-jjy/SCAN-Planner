@@ -90,6 +90,7 @@ private:
 	// 本轮起终点中点（世界系 m），用于将固定节点池平移到当前碰撞段附近。
 	Eigen::Vector3d center_;
 	// POOL_SIZE_ 来自 initGridMap()，当前管理器设置 100³；CENTER_IDX_ 为池的中心索引。
+	// 每轴索引 0..99、中心索引 50；世界坐标还需乘本轮 step_size_，不是用起终点当两个相对角。
 	Eigen::Vector3i CENTER_IDX_, POOL_SIZE_;
 	// 启发项倍率 1.0001，轻微打破相同评分；该启发设置不应直接描述为严格最优保证。
 	const double tie_breaker_ = 1.0 + 1.0 / 10000;
@@ -106,6 +107,8 @@ private:
 	int rounds_{0};
 
 public:
+	// 当前类型别名允许共同持有 AStar；最后一个强所有者释放时调用其析构函数。
+	// 当前主链仅在 BsplineOptimizer::a_star_ 保存它，不能因为用了 shared_ptr 就推断已有多个所有者。
 	typedef std::shared_ptr<AStar> Ptr;
 
 	AStar(){};

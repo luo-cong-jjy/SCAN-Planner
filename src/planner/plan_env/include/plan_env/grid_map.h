@@ -313,6 +313,8 @@ private:
   // initMap() 保存传入的规划器私有句柄，用于注册输入、定时器和显示输出。
   ros::NodeHandle node_;
   // 发布地图相关显示 TF；当前主要广播世界系到 sliding_map 的机身随动平移。
+  // initMap() 才创建，作为成员供后续显示回调复用；智能指针自动管理此动态对象的释放，不需手动 delete。
+  // 当前调用链未显式向其他模块复制此指针；shared_ptr 是现有设计选择，TF 并不要求必须采用共享所有权。
   shared_ptr<tf::TransformBroadcaster> tf_broadcaster_;
   // depth 分支的深度输入，实际话题由 run.launch 的 depth_topic 重映射。
   shared_ptr<message_filters::Subscriber<sensor_msgs::Image>> depth_sub_;
@@ -442,6 +444,7 @@ inline int GridMap::getOccupancy(Eigen::Vector3d pos) {
 }
 
 /// @brief 按 yaw 放置前后两个查询中心，任一中心占用或越界就返回相应结果；半径已编码进障碍膨胀。
+// 面试原理和离散/未知区边界：docs/面试/算法原理与面试问题.md#双圆柱与碰撞检测。
 inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos, double yaw) {
   // 论文式 (3)：机身系两中心隐含为 (+offset,0,0)、(-offset,0,0)，这里不单独创建 s_b 向量。
   // 碰撞尺寸先转入障碍膨胀层，单个圆柱在查询时只剩中心点；两个圆柱的并集对应前后两点查询。
@@ -452,6 +455,7 @@ inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos, double yaw) {
   Eigen::Vector3d rear = pos - mp_.double_cylinder_offset_ * heading;
 
   // 论文式 (5)：地图内 0/1 占用的两次查询用短路返回实现 OR/max；本接口额外用 -1 表示越界，不属于论文二值 max 的输入域。
+  // 真正检测在下一层：把 front 落到体素后，读取“事先已膨胀”的标志；此处不用再计算到各障碍的距离。
   int front_occ = getInflateOccupancyFromBuffer(front, md_.occupancy_buffer_inflate_);
   // 前中心非零就提前返回（含 1 占用和 -1 越界）；前中心为 0 时才继续检查后中心。
   if (front_occ != 0) return front_occ;
@@ -464,8 +468,11 @@ inline int GridMap::getInflateOccupancyFromBuffer(Eigen::Vector3d pos, const std
   if (!isInMap(pos)) return -1;
 
   Eigen::Vector3i id;
+  // 圆柱中心的米制 XYZ -> 全局体素索引，每轴 floor(坐标/分辨率)，不是点云中的点编号。
   posToIndex(pos, id);
 
+  // toAddress() 将索引逐轴取模并展平为一维数组下标；buffer 对应上层传入的膨胀标志数组。
+  // 读到 1：已有障碍的圆柱膨胀覆盖这个中心格；读到 0：未标记膨胀占用，不代表已观测为空闲。
   return int(buffer[toAddress(id)]);
 }
 

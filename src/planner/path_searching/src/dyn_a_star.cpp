@@ -154,6 +154,7 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
 
 /// @brief 执行 A* 并返回 SUCCESS、INIT_ERR 或 SEARCH_ERR；设置步长、中心与新轮次后开始扩展。
 /// 邻居 yaw 来自 XY 扩展方向；搜索耗时超过 0.2 s 或开放集耗尽会失败，调用方负责恢复。
+// 面试定位：本仓库编译的局部 A* 实现，适配投影高度与双圆柱查询；不是调用现成 ROS 全局规划插件。
 ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d end_pt)
 {
     ros::Time time_1 = ros::Time::now();
@@ -161,6 +162,8 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
 
     step_size_ = step_size;
     inv_step_size_ = 1 / step_size;
+    // 固定节点池围绕本次输入起终点的中点定位，不按两点包围盒改变尺寸；两点是池内搜索端点，不是边界角。
+    // 后续端点占用调整只改变 start_idx/end_idx，当前 center_ 不随之重新计算。
     center_ = (start_pt + end_pt) / 2;
 
     Vector3i start_idx, end_idx;
@@ -177,6 +180,7 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
     const double search_xy_len2 = search_xy_delta.squaredNorm();
 
     // 当前每个 XY 候选的高度由起终点参考投影插值，不额外枚举 dz，因此不是自由的 26 邻域三维搜索。
+    // [&] 读取当前搜索局部量，成员访问依赖 this；仅在本次调用中使用，不将闭包保存到外部异步执行。
     auto interpolateZIndexOnSearchPlane = [&](const int x_idx, const int y_idx) -> int {
         if (search_xy_len2 < 1e-8)
             return start_idx(2);
@@ -237,6 +241,8 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
         }
         current->state = GridNode::CLOSEDSET; //move current node from open set to closed set.
 
+        // 100³ 是节点池总容量；这里的 8 邻域是单次扩展的 XY 候选集合：3×3 种偏移排除当前节点后剩 8 种。
+        // 每种偏移产生一个候选邻居，越界/已关闭/碰撞等过滤后，真正加入开放集的数量可能不足 8 个。
         for (int dx = -1; dx <= 1; dx++)
             for (int dy = -1; dy <= 1; dy++)
             {
@@ -246,6 +252,7 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
                 Vector3i neighborIdx;
                 neighborIdx(0) = (current->index)(0) + dx;
                 neighborIdx(1) = (current->index)(1) + dy;
+                // Z 由参考高度关系确定，不独立遍历 dz；三维索引存储并不等于采用 26 邻域自由三维扩展。
                 neighborIdx(2) = interpolateZIndexOnSearchPlane(neighborIdx(0), neighborIdx(1));
 
                 if (neighborIdx(0) < 1 || neighborIdx(0) >= POOL_SIZE_(0) - 1 || neighborIdx(1) < 1 || neighborIdx(1) >= POOL_SIZE_(1) - 1 || neighborIdx(2) < 1 || neighborIdx(2) >= POOL_SIZE_(2) - 1)
@@ -286,6 +293,7 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt, Vector3d
                 }
                 else if (tentative_gScore < neighborPtr->gScore)
                 { //in open set and need update
+                    // 审查点：修改堆内节点评分不会自动修复 priority_queue 堆序；严格最优性不能只由 A* 名称推出。
                     neighborPtr->cameFrom = current;
                     neighborPtr->gScore = tentative_gScore;
                     neighborPtr->fScore = tentative_gScore + getHeu(neighborPtr, endPtr);

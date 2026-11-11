@@ -1,5 +1,6 @@
 <launch>
   <!--
+    Launch：ROS 的节点启动与配置机制。
     ROS1 主启动入口：roslaunch scan_planner run.launch
     arg 是 launch 内的变量，不会自动写入 ROS 参数服务器；param 才会写入参数服务器。
     arg 的 default 提供可被启动命令覆盖的默认值，例如 sensor_type:=depth；
@@ -7,7 +8,12 @@
     $(arg 名称) 读取 launch 变量；$(find 包名) 查找 ROS 包路径；$(eval ...) 计算表达式。
   -->
 
-  <!-- is_real_world：false 使用仿真话题；true 接入外部真机话题，并停用模拟地图、感知和运动学仿真。 -->
+  <!--
+    is_real_world：false 使用仿真输入；true 接入外部真机输入，停用模拟地图、感知及 go2_kinematic_sim。
+    还会切换点云坐标系解释、传感器外参处理和深度相机内参，不仅是改话题名；规划与双圆柱碰撞模型继续共用。
+    默认 closed_loop 下，真机仍由本项目输出 /cmd_vel；定位、传感器驱动和执行该速度的机器人运动接口需另行启动。
+    该开关不会自动加载四足动力学或关节控制器，也不会自动禁用单独选中的 open_loop 分支。
+  -->
   <arg name="is_real_world" default="false"/>
 
   <!--
@@ -23,6 +29,7 @@
 
   <!-- body_pose_topic：机身里程计话题，类型为 nav_msgs/Odometry；按真机/仿真模式选择。 -->
   <arg name="body_pose_topic" value="$(eval '/LIO/odom_vehicle' if arg('is_real_world') else '/quad_0/body_pose')" />
+  <!-- $(eval ...) 是 ROS Launch XML 提供的求值机制，它允许你在 Launch 文件中执行 Python 表达式。 -->
 
   <!-- 将选中的话题名写为 /body_pose_topic 字符串参数，供规划器、控制器、感知和显示节点读取。 -->
   <param name="body_pose_topic" value="$(arg body_pose_topic)" type="str"/>
@@ -40,6 +47,9 @@
       sensor_pose_topic：传感器位姿话题，类型为 nav_msgs/Odometry。
       真机使用 LIO 的 IMU 位姿；仿真按传感器选择 camera_pose 或 lidar_pose。
       建图模块使用它确定观测坐标变换和射线起点；与机身位姿的用途不同。
+      默认 CPU 仿真的 /quad_0/lidar_pose 由 /pcl_render_node 发布：接收 body_pose 后在 publishLidarPose() 组合安装方向。
+      当前 CPU 雷达与机身使用相同平移，旋转叠加 lidar_pitch（参数回退 45°）；其他安装方式不能直接等同两个位姿。
+      仿真点云已在世界系，建图仍需传感器位置作为射线原点；仅重映射到机身话题不会自动补偿安装外参。
     -->
     <arg name="sensor_pose_topic" value="$(eval '/LIO/odom_imu' if arg('is_real_world') else ('/quad_0/camera_pose' if arg('sensor_type') == 'depth' else '/quad_0/lidar_pose'))" />
 

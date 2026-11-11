@@ -107,12 +107,16 @@ namespace scan_planner
   //   return evaluateDeBoor(t + u_(p_));
   // }
 
-  /// @brief 按相邻控制点差和节点时间跨度计算导数控制点，求导后次数降低一阶。
+  /// @brief 按相邻控制点差和节点跨度，计算供低一次导数样条使用的控制点矩阵；不直接计算某时刻的速度。
   Eigen::MatrixXd UniformBspline::getDerivativeControlPoints()
   {
     // 论文式 (1)：导数控制点；均匀节点下分母为 p_*Δt，化简为相邻控制点差/Δt，连续求导得到速度、加速度和 jerk。
     // The derivative of a b-spline is also a b-spline, its order become p_-1
     // control point Qi = p_*(Pi+1-Pi)/(ui+p_+1-ui+1)
+    // 这是对 B 样条基函数解析求导、合并系数后的精确关系，不是用 P(t+epsilon)-P(t) 近似瞬时速度。
+    // 相减的是控制点而非轨迹采样点；均匀节点间隔也不是数值求导的 epsilon，结果要配合低一次基函数才构成导数曲线。
+    // ctp 是局部 Eigen 矩阵变量，不是函数名；保存导数控制点，行数不变、列数比原控制点少 1。
+    // 原对象表示位置时，这些列是速度样条的控制向量；它们不是原位置点，也不是逐时刻采样的真实速度。
     Eigen::MatrixXd ctp(control_points_.rows(), control_points_.cols() - 1);
     for (int i = 0; i < ctp.cols(); ++i)
     {
@@ -125,10 +129,12 @@ namespace scan_planner
   /// @brief 构造导数样条并设置对应节点向量，供速度、加速度的连续求值使用。
   UniformBspline UniformBspline::getDerivative()
   {
+    // 取上面返回的新控制点矩阵，再构造低一次的新样条；不修改原样条的次数或控制点。
     Eigen::MatrixXd ctp = getDerivativeControlPoints();
     UniformBspline derivative(ctp, p_ - 1, interval_);
 
     /* cut the first and last knot */
+    // 导数节点向量去掉首尾各一项，保留对应有效参数区间；不是剪掉原轨迹首尾两段运动。
     Eigen::VectorXd knot(u_.rows() - 2);
     knot = u_.segment(1, u_.rows() - 2);
     derivative.setKnot(knot);
@@ -230,6 +236,8 @@ namespace scan_planner
                                              const vector<Eigen::Vector3d> &start_end_derivative,
                                              Eigen::MatrixXd &ctrl_pts)
   {
+    // 本参数化矩阵按三次均匀 B 样条推导；下面的 (1,4,1)/6 及首尾导数系数并不是任意次数通用公式。
+    // 因而优化器参数 order_ 改为其他值时，这里不会自动生成相应高次样条的初始控制点。
     if (ts <= 0)
     {
       cout << "[B-spline]:time step error." << endl;

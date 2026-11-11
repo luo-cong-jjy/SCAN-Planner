@@ -83,6 +83,8 @@ namespace scan_planner
     Eigen::MatrixXd getControlPoints();
 
     // 碰撞段绕行搜索入口，Manager 初始化时建立 100³ 节点池；成功路径用于生成避障方向。
+    // AStar::Ptr 当前定义为 shared_ptr，但本调用链仅由优化器成员持有；Manager 经此成员配置它不等于新增共享所有者。
+    // A* 内部共享地图，与 A* 对象自身的所有权是两层关系；现有代码未体现必须多方共有这个搜索器的需求。
     AStar::Ptr a_star_;
     // Refine 的位置参考点，Manager::refineTrajAlgo() 对时间调整后的轨迹采样得到，单位 m。
     std::vector<Eigen::Vector3d> ref_pts_;
@@ -192,6 +194,8 @@ namespace scan_planner
 
     /* for benchmark evaluation only */
   public:
+    // 独占指针别名：当前 Manager 持有并复用一份优化器状态，不需要多个模块共同管理这个优化器的寿命。
+    // 不允许复制所有权，可移动；所有者析构/reset 时自动销毁优化器，内部共享地图则按其自己的持有关系释放。
     typedef unique_ptr<BsplineOptimizer> Ptr;
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW

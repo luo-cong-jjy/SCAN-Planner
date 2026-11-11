@@ -201,6 +201,7 @@ public:
     return length;
   }
 
+  // 已有接口审查点：非 void 函数目前缺 return，且依赖 length/time_sum 已有效；本轮仅记录，不修改行为。
   double getMeanVel()
   {
     double mean_vel = length / time_sum;

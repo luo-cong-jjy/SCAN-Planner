@@ -10,9 +10,11 @@
 // 本文件在 mode 2 使用 std::system() 执行 rosparam load，从关键点 YAML 加载任务配置。
 #include <cstdlib>
 
-// 匿名命名空间：把 shellQuote 作为当前编译单元的内部工具，不暴露为 scan_planner 的公共接口。
+// 匿名命名空间：shellQuote 仅辅助本文件实现，采用内部链接，不作为跨编译单元链接调用的函数。
+// 具名 namespace scan_planner 只组织名字，不自动提供 private 权限；不用匿名空间也可能工作，这里是明确实现边界。
 // 各 cpp 的匿名命名空间彼此独立，其他源文件即使有同名辅助函数也不会产生跨文件的同名定义冲突。
 // namespace 只组织名字和链接范围，不会自动执行其中函数；实际调用在下面 init() 的 mode 2 分支。
+// 此处内部链接不同于类的 private 访问控制；原理与多文件示例见 docs/面试/C++相关知识.md#匿名命名空间与编译单元。
 namespace
 {
   // 为 rosparam load 的目标命名空间构造一个 Shell 字符串参数，避免空格或单引号改变参数划分。
@@ -54,7 +56,7 @@ namespace
   }
 } // namespace
 
-// 项目的公开命名空间：这里实现 scan_replan_fsm.h 中声明的 SCANReplanFSM 成员。
+// 项目的具名命名空间：这里实现 scan_replan_fsm.h 中声明的 SCANReplanFSM 成员；namespace 本身没有 public/private 权限。
 // 下面的实现可直接调用本文件匿名命名空间的 shellQuote；它仍是文件内部工具，并非类成员。
 namespace scan_planner
 {
@@ -199,6 +201,8 @@ namespace scan_planner
       // 首次构造时列表为空；resize(N) 将元素个数调整为 N，使 [0] 到 [N-1] 都有三维点对象可访问。
       // resize() 是 std::vector 的成员函数；这一步不读取坐标，也不应假设 Eigen 点的 XYZ 已全部为零。
       // 例如 waypoint_num_=2，调整后有 preset_waypoints_[0] 和 [1]，再由循环逐点填入 XYZ（m）。
+      // 可类比 Python 的可变长列表；此处 resize 改变实际长度，reserve 仅预留容量，不能替代它来建立下标元素。
+      // 每个点的三维类型已由头文件中的 vector<Eigen::Vector3d> 指定；resize(2) 是创建两个三维点，不是设置坐标维数。
       preset_waypoints_.resize(waypoint_num_);
       // i 从 0 递增到 waypoint_num_-1；每轮读取同一个点的 X、Y、Z 三个分量。
       for (int i = 0; i < waypoint_num_; i++)
@@ -209,6 +213,7 @@ namespace scan_planner
         // 例如 i=0 时，下面三句分别把参数值写入第一个点的 X、Y、Z，不会创建三个不同的点。
         //
         // 三轴的 -1.0 是本代码统一选取的回退数值：缺少键或不能按期望类型读取时写入对应分量。
+        // 这是读取失败的回退路径，不是捕获所有异常；非法参数名等情况仍可能抛异常。本行只写第 i 点的 X。
         // 参数存在且读取成功时使用真实参数值，哪怕该值恰好就是 -1.0；回退值不是“拒绝负坐标”的规则。
         // 本循环没有检查 param() 的成功返回值，也未逐轴验证缺失，因此回退后仍会继续保存并用于后续规划。
         // 这与前面点数 <=0 时关闭节点不同；不能只靠某分量是否等于 -1.0 判断它是否读取失败。
@@ -227,11 +232,15 @@ namespace scan_planner
     /* initialize main modules */
     // 创建规划显示入口，后续 FSM 与管理器用它发布目标、参考和局部规划过程 Marker。
     // 从右向左理解：new PlanningVisualization(nh) 创建实际显示对象并立即执行带 nh 的构造函数。
-    // reset(...) 是 visualization_ 这个共享智能指针的操作，接管刚创建的对象；首次初始化前指针为空。
+    // reset(...) 接管 new 返回的 PlanningVisualization*，管理的是新显示对象类型，类比int*；首次初始化前指针为空。
+    // PlanningVisualization* 是“指向显示对象的裸指针类型”；new 表达式成功后产生该类型的地址值，不是类名本身就是地址。
+    // nh 是已有 ros::NodeHandle 对象的引用，作为构造函数参数提供 ROS 接口，不是被 reset 接管的对象。
     // 这里创建的是 PlanningVisualization 对象，头文件中的 PlanningVisualization::Ptr 只是管理它的成员类型。
     visualization_.reset(new PlanningVisualization(nh));
     // 创建统一规划管理器，接收状态机的轨迹生成/重规划/停止请求。
     // 这一版 new 不传 nh，调用管理器的无参构造；地图、优化器与搜索池在下一句 initPlanModules() 中建立。
+    // 不是管理器不需要 ROS 句柄，而是把 nh 留到后面的 initPlanModules(nh, visualization_) 才传入。
+    // 构造时是否传参由类的构造函数接口决定，与外层使用 unique_ptr/shared_ptr 无关。
     planner_manager_.reset(new SCANPlannerManager);
     // 建立共享占用地图、样条优化器和 A* 节点池，并接入刚创建的显示入口。
     // 传入同一可视化对象的共享指针，使 FSM 与管理器各自持有并复用其发布接口，而不是再创建一套显示对象。
@@ -254,12 +263,18 @@ namespace scan_planner
     // & 在此处取得成员函数指针，与形参里的引用符号 & 用法不同；没有函数调用所需的事件实参和调用括号。
     // ROS 内部绑定这两项，定时到期且回调队列被处理时，可理解为执行 this->execFSMCallback(event)。
     // event 由 ROS 提供给回调，不是这里手动传入；this 也不指向 nh 或 planner_manager_。
+    // 成员函数指针与对象绑定的独立示例：docs/面试/示例/04_callback.cpp；注册回调本身不执行算法。
     // 未写出的选项使用默认 oneshot=false、autostart=true：重复定时并自动启动。
-    // 实际函数体仍需由 main() 的 ros::spin() 等回调处理入口调度；createTimer() 不等于立刻执行一次状态机。
+    // 分两步理解：定时器到期时由 ROS 将任务放入回调队列；spin()/spinOnce() 等处理队列时才实际调用函数体。
+    // 此处创建后默认已开始计时，不是等 main 的 spin() 才开始；但 createTimer() 本身不直接执行一次状态机。
+    // 不会在这一行 sleep 0.01 s：创建完成后继续执行下一句；到期任务要等回调队列被处理时才执行。
+    // 默认 mode 1 随后还会在 main 等 1 s，普通回调延后到 spin 开始处理；0.01 s 仅为目标周期，不保证准点执行。
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &SCANReplanFSM::execFSMCallback, this);
     // 定时任务：采样当前轨迹碰撞风险，周期 0.05 s（目标 20 Hz），发现风险时尝试重规划或急停。
     // 绑定方式相同：选择本类 checkCollisionCallback，并在同一个 this 状态机对象上运行，共享其轨迹和状态。
     // safety_timer_ 保存这项任务的句柄；两项定时器的目标周期不同，但本项目没有为它们各建一个独立执行线程。
+    // 两项任务可以同时到期排队，但默认 ros::spin() 在同一线程依次执行回调；正在规划时安全回调不能自动抢占它。
+    // 名为 safety 不代表队列优先级更高；它也可能在内部尝试重规划，执行耗时会影响其他回调的响应。
     safety_timer_ = nh.createTimer(ros::Duration(0.05), &SCANReplanFSM::checkCollisionCallback, this);
 
     std::string body_pose_topic;
@@ -279,6 +294,7 @@ namespace scan_planner
 
     // 运行连接（输出入口）：可执行局部轨迹接口：FSM 发布控制点、knots 和起始时刻，执行控制器接收后
     // 重建样条。
+    // knots 是样条的标量节点时间序列（s），不是 XYZ 控制点或 A* 节点；接收端用它与控制点、次数共同重建轨迹。
     // 队列容量：10 条消息，不是发布/规划频率。
     bspline_pub_ = nh.advertise<scan_planner::Bspline>("/planning/bspline", 10);
     // 运行连接（输出入口）：规划调试消息输出；当前主要刷新时间戳，a~e 未填入实际性能统计。
@@ -845,11 +861,13 @@ namespace scan_planner
     // start_time_ 是可补偿的绝对时间基准，区别于用于轨迹求值的相对时间 t_cur；此处不移动空间起点。
     // 例如 now=12 s、start_time_=10 s 时进度为 2 s；冻结一小步 dt=0.01 s 后，两者变为 12.01、10.01 s。
     // 差值仍为 2 s；若只保持 start_time_=10 s，进度反而会增加到 2.01 s，不能实现冻结。
-    // 已有有效轨迹且控制器要求冻结时才做补偿；解除冻结后起始时间戳不再随本函数增加，进度继续推进。
+    // 控制器要求冻结且起始时间基准通过下方非近零检查时才补偿；解除冻结后不再后移它，进度继续推进。
     // 这是按调用间隔逐步补偿：用当前冻结标志决定是否计入整段 dt，未按标志切换的精确时刻拆分边界间隔。
-    // 两项须同时成立：控制器要求冻结，且已有非近零的轨迹起始时间戳；toSec() 转成秒，1e-5 s 为 0.00001 s。
-    // start_time_ 默认是零；保存局部轨迹时，管理器的 updateTrajInfo() 已写入当前 ROS 时刻，之后还可跨调用累计补偿。
-    // 此处检查保存的时间戳是否非近零，不是检查本次是否修改过它，也不是判断轨迹已执行多久或完整验证轨迹有效性。
+    // 两项须同时成立：收到冻结要求，且 start_time_ 大于 1e-5 s（0.00001 s），以排除默认零/极近零时间基准。
+    // start_time_ 的零初值来自 ros::Time 默认构造；局部轨迹保存时 updateTrajInfo() 将它写成当时的 ROS 时刻。
+    // 例如 ROS 时刻 100 s 刚保存轨迹：start_time_=100，轨迹相对进度 now-start_time_=0，不是 start_time_=0。
+    // 未保存过轨迹时不能给默认零值累加 dt，伪造一个看似已设置的起始基准；此处仅作简易就绪门槛。
+    // 该条件不表示“已执行超过 1e-5 s”，也不验证 now>=start_time_、控制点或时长有效；零仿真时间下仍有局限。
     if (go2_execution_frozen_ && info->start_time_.toSec() > 1e-5)
       info->start_time_ += ros::Duration(dt);
   }
@@ -971,6 +989,7 @@ namespace scan_planner
 
     // GEN_NEW_TRAJ 首次进入时计数为 1，局部规划使用非随机初值；失败后再次请求本状态，计数变大以切换随机初值。
     // state_str 仅将枚举值 0~5 映射为可读名称，供下面打印；字符串本身不控制规划行为。
+    // 函数内 static 数组跨调用保留，不每次重新构造；与 printFSMExecState 中同名数组不是同一份。
     static string state_str[7] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP"};
     // 先记住旧状态用于日志，再更新成员 exec_state_；真正的规划/执行检查由后续 execFSMCallback() 的 switch 分支处理。
     // exec_state_ 的类型是 FSM_EXEC_STATE 枚举；int(...) 将其转成整数编号，作为 state_str 下标获取状态名称。
@@ -1003,6 +1022,7 @@ namespace scan_planner
   /// @brief 将枚举状态转换为可读日志；等待目标时保持 INIT 并不必然表示故障。
   void SCANReplanFSM::printFSMExecState()
   {
+    // 本函数自己的静态局部名称表，和另一个函数中的 state_str 分开存储；static 不等于 const。
     static string state_str[7] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP"};
 
     cout << "[FSM]: state: " + state_str[int(exec_state_)] << endl;
@@ -1031,6 +1051,8 @@ namespace scan_planner
 
     // fsm_num 只统计本回调进入次数：每 100 次输出一次状态/缺输入提示，便于观察；与规划重试计数无关。
     // static 使其跨调用保留；名义周期下约 1 s 输出一次，但回调延迟时实际间隔会变长。
+    // 若改成普通 int，每次回调都从 0 加到 1，无法累计到 100；若有多个 FSM 对象，此局部 static 也会被它们共用。
+    // static 的位置差异与小例子见 docs/面试/C++相关知识.md#static关键字；它不会创建一个新线程。
     static int fsm_num = 0;
     fsm_num++;
     if (fsm_num == 100)

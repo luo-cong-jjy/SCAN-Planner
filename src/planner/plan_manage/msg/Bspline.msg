@@ -8,6 +8,7 @@ int64 traj_id
 time start_time
 
 # 节点时间向量，重建时覆盖构造函数生成的默认均匀节点。
+# 每项是样条时间参数（s），不是三维坐标，也不与控制点一一对应；完整向量可包含有效执行区间之外的边界节点。
 float64[] knots
 # 世界坐标控制点，单位 m；按照样条控制点顺序排列。
 geometry_msgs/Point[] pos_pts

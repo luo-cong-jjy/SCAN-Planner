@@ -3,6 +3,8 @@
 /// lidar 使用点云与最新传感器位姿，depth 使用近似同步的深度图与位姿；最终都通过射线更新 log-odds。
 /// 固定缓冲区通过全局体素索引取模复用，维护占用值、膨胀层与膨胀计数；位置/尺寸单位 m。
 /// 搜索、优化和安全回调查询此地图，显示话题只暴露其可视化结果。
+/// 阅读重点：updateSlidingMap 的地址复用、raycastProcess 的证据融合、applyOccupancyUpdate 的膨胀贡献维护。
+/// 机制、阅读顺序与面试追问见 docs/面试/算法原理与面试问题.md#滑动局部地图的原理与面试重点。
 #include "plan_env/grid_map.h"
 #include <cmath>
 #include <limits>
@@ -223,33 +225,59 @@ void GridMap::initMap(ros::NodeHandle &nh)
     mp_.sensor_type_ = "lidar";
   }
 
+  // 保存体素边长的倒数（1/m），用于将米制坐标换算成体素索引；例如边长 0.05 m 时，倒数为 20。
   mp_.resolution_inv_ = 1 / mp_.resolution_;
+  // 设置初始地图窗口的最小角坐标（m）：XY 关于世界原点居中，Z 底面从 ground_height_ 开始。
+  // 例如窗口长宽均为 10 m，初始最小 X/Y 为 -5 m；窗口滑动后，此原点会随地图边界更新。
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
+  // 保存窗口沿 XYZ 的尺寸（m），不是最大角坐标；后续用尺寸/分辨率计算各轴体素数。
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
 
   // 把概率配置转为可累加的 log-odds；p_hit/p_miss 分别提供正/负证据，阈值与截断值单独保存。
+  // logit 在 grid_map.h 中定义为宏：L=ln(p/(1-p))；后续融合用 L 累加证据，而不是直接累加概率。
+  // 以下只准备常量，并未在这里更新任何观测体素；默认数值对应当前 advanced_param.xml。
+  // 命中更新量：p_hit=0.85 → L≈+1.735，后续增加该体素的占用倾向。
   mp_.prob_hit_log_ = logit(mp_.p_hit_);
+  // 未命中更新量：p_miss=0.30 → L≈-0.847，后续降低该体素的占用倾向。
   mp_.prob_miss_log_ = logit(mp_.p_miss_);
+  // 融合结果的截断下限：p_min=0.12 → L≈-1.992，限制空闲证据的累计幅度。
   mp_.clamp_min_log_ = logit(mp_.p_min_);
+  // 融合结果的截断上限：p_max=0.98 → L≈+3.892，限制占用证据，便于之后的空闲观测纠正。
   mp_.clamp_max_log_ = logit(mp_.p_max_);
+  // 占用判定阈值：p_occ=0.80 → L≈+1.386；实际判定使用体素 L 大于此值，不是每次命中都直接判占用。
   mp_.min_occupancy_log_ = logit(mp_.p_occ_);
+  // 未知状态的数值偏移量，不是 1% 概率；下面将新体素初始化为 clamp_min_log_-0.01，与已观测空闲区分。
   mp_.unknown_flag_ = 0.01;
+  // 将窗口平移门槛由米换成格数：位移(m)×分辨率倒数(1/m)，ceil 向上取整，再至少保留 1 格。
+  // static_cast<int>(表达式) 是 C++ 显式类型转换语法，不是普通函数；把 ceil 返回的浮点结果变成整数。
+  // 例如 0.21/0.05=4.2 → ceil 得 5.0 → 转成 int 为 5；向上取整由 ceil 完成，不是 static_cast 完成。
+  // 当前默认 0.2/0.05=4 格，后续按中心索引位移判断是否移动窗口，不是每 4 次回调移动一次。
   mp_.map_sliding_thresh_vox_ = std::max(1, static_cast<int>(std::ceil(mp_.map_sliding_thresh_ * mp_.resolution_inv_)));
 
+  // 打印转换后的更新量、截断值和占用阈值用于启动核对；只输出日志，不触发地图融合。
   cout << "hit: " << mp_.prob_hit_log_ << endl;
   cout << "miss: " << mp_.prob_miss_log_ << endl;
   cout << "min log: " << mp_.clamp_min_log_ << endl;
   cout << "max: " << mp_.clamp_max_log_ << endl;
   cout << "thresh log: " << mp_.min_occupancy_log_ << endl;
 
+  // 沿 XYZ 分别计算需要多少体素；向上取整覆盖配置尺寸，默认 (10,10,5)/0.05 得 (200,200,100)。
+  // i=0/1/2 分别对应 X/Y/Z；map_voxel_num_ 存的是各轴格数，不是米制长度。
   for (int i = 0; i < 3; ++i)
     mp_.map_voxel_num_(i) = ceil(mp_.map_size_(i) / mp_.resolution_);
 
+  // 先按名义尺寸给出窗口世界坐标范围：最小角=origin，最大角=origin+size（单位 m）。
   mp_.map_min_boundary_ = mp_.map_origin_;
   mp_.map_max_boundary_ = mp_.map_origin_ + mp_.map_size_;
+  // 将最小角世界坐标转为全局体素索引，内部逐轴 floor(坐标/分辨率)；索引可能为负，不是数组地址。
   posToIndex(mp_.map_origin_, mp_.map_bound_min_idx_);
+  // 最后一格索引=首格索引+格数-1；Eigen::Vector3i::Ones() 为 (1,1,1)，逐轴减 1。
+  // 例如 X 轴从 -100 开始共 200 格，最后一格为 99，不是 100。
   mp_.map_bound_max_idx_ = mp_.map_bound_min_idx_ + mp_.map_voxel_num_ - Eigen::Vector3i::Ones();
+  // 建立滑动窗口的中心索引锚点：最小索引+各轴格数的一半，整数分量除法；虽名为 origin_idx_，它不是最小角索引。
   mp_.map_origin_idx_ = mp_.map_bound_min_idx_ + mp_.map_voxel_num_ / 2;
+  // 用上述中心和格数重算索引边界，再转换回世界边界并刷新 map_origin_，使窗口边缘对齐体素划分。
+  // 因格数已向上取整、起点索引已向下取整，对齐后的范围可能与名义米制范围略有差别。
   updateMapBoundaryFromIndex();
 
   // initialize data buffers
@@ -258,24 +286,44 @@ void GridMap::initMap(ros::NodeHandle &nh)
   // 仅 double 占用数组约 32 MB，下面还有膨胀、计数等缓冲区；滑动复用空间是为了保持局部高分辨率而限制总容量。
   int buffer_size = mp_.map_voxel_num_(0) * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2);
 
+  // vector<T>(数量, 初始值)：创建指定数量的元素并统一赋初值；以下地图数组以相同槽位对应同一个体素。
+  // 原始占用 log-odds：设为比空闲截断下限更小的值，标记尚未观测，而不是初始化成“已知空闲”。
   md_.occupancy_buffer_ = vector<double>(buffer_size, mp_.clamp_min_log_ - mp_.unknown_flag_);
+  // 膨胀占用标志：0 表示当前未标记膨胀障碍；仅凭这个 0 不能证明该格已观测为空闲。
   md_.occupancy_buffer_inflate_ = vector<char>(buffer_size, 0);
+  // 膨胀覆盖计数：记录各格被多少个占用源覆盖；删除一个源时仍保留其他源的贡献，初始均为 0。
   md_.occupancy_buffer_inflate_cnt_ = vector<int>(buffer_size, 0);
+  // 根据圆柱半径、上下膨胀距离与分辨率，预计算邻域体素偏移，供后续占用变化时复用；此处尚未加入障碍。
   rebuildInflationOffsets();
 
+  // 本轮每格接收的 hit+miss 总次数，先清零；只把首次入缓存的格子放入待融合队列。
   md_.count_hit_and_miss_ = vector<short>(buffer_size, 0);
+  // 上述总次数中的 hit 次数；与 total-hit 得到的 miss 次数比较，选择本轮正/负更新，融合后清零。
   md_.count_hit_ = vector<short>(buffer_size, 0);
+  // 射线端点处理标记：按当前 raycast_num_ 标识本轮已处理的端点，减少重复端点的后续射线遍历。
   md_.flag_rayend_ = vector<char>(buffer_size, -1);
+  // 射线沿途体素的遍历标记：用于本轮多条射线共用区域的去重/提前结束；-1 为初始未处理标记。
   md_.flag_traverse_ = vector<char>(buffer_size, -1);
 
+  // 射线融合轮次从 0 开始，每次处理非空投影点集时递增；它不是本帧射线条数或 ROS 回调频率。
   md_.raycast_num_ = 0;
 
+  // 按 640×480 深度图、横纵均隔 skip_pixel 采样的规模建立初始点缓冲；默认步长 2，对应 76800 个点位。
+  // resize 改变实际元素个数，但这些位置尚不是有效观测；这里只能作为初始尺寸，不能保证适配任意图像分辨率。
+  // lidar 分支在需要时可 push_back 扩展；后续只融合下面 proj_points_cnt 指定的有效前缀。
   md_.proj_points_.resize(640 * 480 / mp_.skip_pixel_ / mp_.skip_pixel_);
+  // 当前有效投影点数初始化为 0；收到点云或完成深度反投影后再填点计数，不等于上面的缓冲长度。
   md_.proj_points_cnt = 0;
 
   /* init callback */
+  // 创建 TF 广播器并交给智能指针管理；后续 publishSlidingMapFrame() 用它发送地图显示坐标变换。
+  // 此处只创建对象，不会让地图滑动；实际体素窗口更新由 updateSlidingMap() 完成。
+  // 成员指针在 initMap 返回后仍可供显示回调复用，最后一个强所有者释放时自动销毁广播器。
+  // TF 类本身不强制使用 shared_ptr；当前未见对外共享此指针，也可另行设计为独占指针或按值成员。
   tf_broadcaster_.reset(new tf::TransformBroadcaster);
 
+  // 以下 this 均指当前执行 initMap() 的 GridMap 对象，不是 node_ 句柄、订阅器或同步器。
+  // 回调需同时指定“调用哪个成员函数”和“在哪个地图对象上调用”，才能更新该对象自己的 md_/mp_。
   if (mp_.sensor_type_ == "depth")
   {
     // 深度分支输入：/grid_map/depth 经 remap 接实际深度图，队列 50，等待与位姿近似同步。
@@ -287,6 +335,9 @@ void GridMap::initMap(ros::NodeHandle &nh)
     sync_image_pose_.reset(new message_filters::Synchronizer<SyncPolicyImagePose>(
         SyncPolicyImagePose(100), *depth_sub_, *depth_pose_sub_));
     // 配对完成才调用 depthPoseCallback()；同步策略队列为 100，不是地图更新频率。
+    // registerCallback 是给双消息同步器登记处理函数，不是再次创建单话题订阅或定时器。
+    // boost::bind 固定成员函数与当前 this，_1/_2 占位等待配对后的深度图/位姿；此处不会立即执行回调。
+    // 同步器触发时相当于 this->depthPoseCallback(image, pose)，并非在同步器对象上调用 GridMap 的成员函数。
     sync_image_pose_->registerCallback(boost::bind(&GridMap::depthPoseCallback, this, _1, _2));
   }
   else if (mp_.sensor_type_ == "lidar")
@@ -310,6 +361,7 @@ void GridMap::initMap(ros::NodeHandle &nh)
       node_.subscribe<nav_msgs::Odometry>("/grid_map/body_pose", 50, &GridMap::slidingMapFrameCallback, this);
 
   // 定时任务：消费待融合观测，周期 0.05 s；没有新观测标志时不重复更新概率。
+  // 与 subscribe/bind 中 this 的用途相同：绑定当前地图实例；this 是借用地址，不增加 shared_ptr 所有权。
   occ_timer_ = node_.createTimer(ros::Duration(0.05), &GridMap::updateOccupancyCallback, this);
   // 定时任务：发布地图/窗口/随动 TF 等显示信息，周期 0.05 s，不改变控制指令。
   vis_timer_ = node_.createTimer(ros::Duration(0.05), &GridMap::visCallback, this);
@@ -433,6 +485,7 @@ void GridMap::updateInflationLayer(const Eigen::Vector3i& id, int delta,
 {
   for (const auto& offset : offsets)
   {
+    // id 是源障碍体素，offset 是预计算的圆柱膨胀偏移；inf_id 是需要更新的“禁止中心进入”的格。
     const Eigen::Vector3i inf_id = id + offset;
     if (!isInMap(inf_id))
       continue;
@@ -444,6 +497,7 @@ void GridMap::updateInflationLayer(const Eigen::Vector3i& id, int delta,
     cnt_buffer[addr] += delta;
     if (cnt_buffer[addr] < 0)
       cnt_buffer[addr] = 0;
+    // 这里提前写好膨胀标志；之后 getInflateOccupancyFromBuffer() 检查圆柱中心时直接读取它。
     flag_buffer[addr] = cnt_buffer[addr] > 0 ? 1 : 0;
   }
 }
@@ -682,6 +736,7 @@ void GridMap::projectDepthImage()
   Eigen::Vector3d pt_cur, pt_world;
   const double inv_factor = 1.0 / mp_.k_depth_scaling_factor_;
 
+  // margin 是图像边框厚度（像素），与地图分辨率无关；在内缩后的范围里再按 skip_pixel 稀疏取样。
   for (int v = mp_.depth_filter_margin_; v < rows - mp_.depth_filter_margin_; v += mp_.skip_pixel_)
   {
     row_ptr = md_.depth_image_.ptr<uint16_t>(v) + mp_.depth_filter_margin_;
@@ -698,14 +753,17 @@ void GridMap::projectDepthImage()
 
       if (raw_depth == 0)
       {
+        // 现有观测策略：无返回值也按超量程方向提供 miss 证据，不代表零值能证明前方实际空闲。
         depth = mp_.max_ray_length_ + 0.1;
       }
       else if (depth < mp_.depth_filter_mindist_)
       {
+        // 太近的非零测量直接丢弃，不是将 0.3 m 内地图全部清空；0.05 m 体素边长不参与此比较。
         continue;
       }
       else if (depth > mp_.depth_filter_maxdist_)
       {
+        // 这里设置的是相机 Z 深度；反投影后的欧氏射线长度至少为它，后续由 raycastProcess 截断并记 miss。
         depth = mp_.max_ray_length_ + 0.1;
       }
 
@@ -1029,6 +1087,8 @@ void GridMap::depthPoseCallback(const sensor_msgs::ImageConstPtr &img,
 }
 
 /// @brief lidar 位姿入口：归一化四元数、按需应用外参并保存射线原点，同时更新滑动窗口。
+// 默认仿真 /grid_map/sensor_pose 重映射到 /quad_0/lidar_pose，由 pcl_render_node 组合机身位姿与雷达安装方向发布。
+// cloud_is_world=true 时不再用 ray_q_ 旋转点云 XYZ，但 ray_pos_ 仍用于射线起点/滑窗；真实安装偏移不能凭话题改名省略。
 void GridMap::sensorPoseCallback(const nav_msgs::OdometryConstPtr &pose_msg)
 {
   if (mp_.sensor_type_ != "lidar")
