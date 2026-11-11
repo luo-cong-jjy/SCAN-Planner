@@ -424,6 +424,7 @@ void GridMap::updateMapBoundaryFromIndex()
 void GridMap::rebuildInflationOffsets()
 {
   // 在每个原始占用体素周围标记圆柱形偏移：XY 按半径扩展，Z 按配置的上下距离扩展。
+  // 圆柱是单个占用源的膨胀模板；多个源的模板取并集，因此整面墙膨胀后仍是加厚的墙，不是单根圆柱。
   // 增量占用更新用这些偏移维护膨胀标志；姿态查询只读中心对应格，不再遍历完整圆柱体积。
   const double double_radius = std::max(0.0, mp_.double_cylinder_radius_);
   const int inf_step_xy = ceil(double_radius / mp_.resolution_);
@@ -1235,6 +1236,7 @@ void GridMap::publishMap()
 }
 
 /// @brief 发布膨胀占用体素，用于检查机器人碰撞几何与环境裕量的关系。
+// 输出各膨胀格中心的点云，不输出圆柱 Marker；default.rviz 用 0.1 m 的 Flat Squares 显示，外观不等于体素实体边界。
 void GridMap::publishMapInflate(bool all_info)
 {
 
